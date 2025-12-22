@@ -2,26 +2,52 @@
   "name": "sera-ai",
   "version": "1.0.0",
   "description": "Nuxera ambiant scribing",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "prepublishOnly": "npm run build"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Nuxera-AI-Team/sera-ai.git"
-  },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "react",
+    "component",
+    "sera",
+    "widget",
+    "nuxera",
+    "ai"
+  ],
+  "author": "Nuxera AI",
   "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/Nuxera-AI-Team/sera-ai/issues"
+  "peerDependencies": {
+    "react": "^16.8.0 || ^17.0.0 || ^18.0.0",
+    "react-dom": "^16.8.0 || ^17.0.0 || ^18.0.0"
   },
-  "homepage": "https://github.com/Nuxera-AI-Team/sera-ai#readme",
   "devDependencies": {
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "tsup": "^8.5.1",
     "typescript": "^5.9.3"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nuxera-AI-Team/sera-ai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nuxera-AI-Team/sera-ai/issues"
+  },
+  "homepage": "https://github.com/Nuxera-AI-Team/sera-ai#readme"
 }
