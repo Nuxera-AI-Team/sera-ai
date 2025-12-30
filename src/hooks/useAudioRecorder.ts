@@ -52,6 +52,8 @@ interface UseAudioRecorderReturn {
   statusMessage: string;
 }
 
+const apiBaseUrl = "http://localhost:3000"; // Replace with your actual API base URL  
+
 const useAudioRecorder = ({
   apiKey,
   speciality,
@@ -242,10 +244,17 @@ const useAudioRecorder = ({
 
   React.useEffect(() => {
     // Use server session ID for callbacks, fallback to local session ID
-    onTranscriptionUpdate(
+    console.log("Triggering onTranscriptionUpdate with:", {
       alreadyDoneTranscription,
-      sessionIdRef.current || localSessionIdRef.current || ""
-    );
+      sessionId: sessionIdRef.current,
+      localSessionId: localSessionIdRef.current,
+    });
+    if (alreadyDoneTranscription.length > 0) {
+      onTranscriptionUpdate(
+        alreadyDoneTranscription,
+        sessionIdRef.current || localSessionIdRef.current || ""
+      );
+    }
   }, [alreadyDoneTranscription, onTranscriptionUpdate]);
 
   // Add useEffect to track speciality changes
@@ -515,7 +524,7 @@ const useAudioRecorder = ({
             //   headers["Content-Type"] = contentType;
             // }
 
-            const response = await fetch(`${process.env.NEXT_PUBLIC_API_BACKEND}/api/transcribe`, {
+            const response = await fetch(`${apiBaseUrl}/api/transcribe`, {
               method: "POST",
               headers: headers,
               body: formData,

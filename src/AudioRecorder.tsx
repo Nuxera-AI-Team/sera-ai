@@ -5,6 +5,116 @@ import { Mic, Square, Loader2, Pause, Play, AlertTriangle } from "lucide-react";
 import Toast from "./components/Toast";
 import AudioVisualizerImproved from "./components/AudioVisualizerImproved";
 
+// Embedded minimal Tailwind utilities
+const tailwindStyles = `
+  .space-y-4 > :not([hidden]) ~ :not([hidden]) { margin-top: 1rem; }
+  .bg-orange-50 { background-color: rgb(255 247 237); }
+  .bg-blue-900 { background-color: rgb(30 58 138); }
+  .text-yellow-200 { color: rgb(254 240 138); }
+  .hover\\:bg-blue-700:hover { background-color: rgb(29 78 216); }
+  .dark .dark\\:bg-orange-900\\/20 { background-color: rgb(194 65 12 / 0.2); }
+  .border { border-width: 1px; }
+  .border-orange-200 { border-color: rgb(254 215 170); }
+  .dark .dark\\:border-orange-800 { border-color: rgb(154 52 18); }
+  .rounded-lg { border-radius: 0.5rem; }
+  .p-4 { padding: 1rem; }
+  .flex { display: flex; }
+  .items-start { align-items: flex-start; }
+  .items-center { align-items: center; }
+  .justify-center { justify-content: center; }
+  .flex-shrink-0 { flex-shrink: 0; }
+  .h-5 { height: 1.25rem; }
+  .w-5 { width: 1.25rem; }
+  .text-orange-400 { color: rgb(251 146 60); }
+  .ml-3 { margin-left: 0.75rem; }
+  .flex-1 { flex: 1 1 0%; }
+  .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+  .font-medium { font-weight: 500; }
+  .text-orange-800 { color: rgb(154 52 18); }
+  .dark .dark\\:text-orange-200 { color: rgb(254 215 170); }
+  .mt-2 { margin-top: 0.5rem; }
+  .text-orange-700 { color: rgb(194 65 12); }
+  .dark .dark\\:text-orange-300 { color: rgb(253 186 116); }
+  .list-disc { list-style-type: disc; }
+  .list-inside { list-style-position: inside; }
+  .bg-red-50 { background-color: rgb(254 242 242); }
+  .dark .dark\\:bg-red-900\\/20 { background-color: rgb(127 29 29 / 0.2); }
+  .border-red-200 { border-color: rgb(254 202 202); }
+  .dark .dark\\:border-red-800 { border-color: rgb(153 27 27); }
+  .text-red-400 { color: rgb(248 113 113); }
+  .text-red-800 { color: rgb(153 27 27); }
+  .dark .dark\\:text-red-200 { color: rgb(254 202 202); }
+  .text-red-700 { color: rgb(185 28 28); }
+  .dark .dark\\:text-red-300 { color: rgb(252 165 165); }
+  .mt-4 { margin-top: 1rem; }
+  .bg-red-600 { background-color: rgb(220 38 38); }
+  .hover\\:bg-red-700:hover { background-color: rgb(185 28 28); }
+  .text-white { color: rgb(255 255 255); }
+  .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+  .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+  .px-4 { padding-left: 1rem; padding-right: 1rem; }
+  .rounded { border-radius: 0.25rem; }
+  .rounded-full { border-radius: 9999px; }
+  .transition-colors { transition-property: color, background-color, border-color, text-decoration-color, fill, stroke; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+  .bg-yellow-50 { background-color: rgb(254 252 232); }
+  .dark .dark\\:bg-yellow-900\\/20 { background-color: rgb(133 77 14 / 0.2); }
+  .border-yellow-200 { border-color: rgb(254 240 138); }
+  .dark .dark\\:border-yellow-800 { border-color: rgb(133 77 14); }
+  .text-yellow-400 { color: rgb(250 204 21); }
+  .text-yellow-800 { color: rgb(133 77 14); }
+  .dark .dark\\:text-yellow-200 { color: rgb(254 240 138); }
+  .text-yellow-700 { color: rgb(161 98 7); }
+  .dark .dark\\:text-yellow-300 { color: rgb(253 224 71); }
+  .space-x-3 > :not([hidden]) ~ :not([hidden]) { margin-left: 0.75rem; }
+  .space-x-1 > :not([hidden]) ~ :not([hidden]) { margin-left: 0.25rem; }
+  .space-x-2 > :not([hidden]) ~ :not([hidden]) { margin-left: 0.5rem; }
+  .bg-yellow-600 { background-color: rgb(202 138 4); }
+  .hover\\:bg-yellow-700:hover { background-color: rgb(161 98 7); }
+  .disabled\\:opacity-50:disabled { opacity: 0.5; }
+  .h-3 { height: 0.75rem; }
+  .w-3 { width: 0.75rem; }
+  .animate-spin { animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .bg-gray-600 { background-color: rgb(75 85 99); }
+  .hover\\:bg-gray-700:hover { background-color: rgb(55 65 81); }
+  .bg-blue-50 { background-color: rgb(239 246 255); }
+  .dark .dark\\:bg-blue-900\\/20 { background-color: rgb(30 58 138 / 0.2); }
+  .border-blue-200 { border-color: rgb(191 219 254); }
+  .dark .dark\\:border-blue-800 { border-color: rgb(30 64 175); }
+  .text-blue-600 { color: rgb(37 99 235); }
+  .block { display: block; }
+  .text-blue-700 { color: rgb(29 78 216); }
+  .dark .dark\\:text-blue-300 { color: rgb(147 197 253); }
+  .text-xs { font-size: 0.75rem; line-height: 1rem; }
+  .dark .dark\\:text-blue-400 { color: rgb(96 165 250); }
+  .mt-1 { margin-top: 0.25rem; }
+  .bg-teal-600 { background-color: rgb(13 148 136); }
+  .hover\\:bg-teal-700:hover { background-color: rgb(15 118 110); }
+  .bg-green-600 { background-color: rgb(22 163 74); }
+  .hover\\:bg-green-700:hover { background-color: rgb(21 128 61); }
+  .bg-yellow-500 { background-color: rgb(234 179 8); }
+  .hover\\:bg-yellow-600:hover { background-color: rgb(202 138 4); }
+  .bg-gradient-to-r { background-image: linear-gradient(to right, var(--tw-gradient-stops)); }
+  .from-orange-400 { --tw-gradient-from: #fb923c; --tw-gradient-to: rgb(251 146 60 / 0); --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to); }
+  .to-pink-500 { --tw-gradient-to: #ec4899; }
+  .hover\\:from-orange-500:hover { --tw-gradient-from: #f97316; --tw-gradient-to: rgb(249 115 22 / 0); --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to); }
+  .hover\\:to-pink-600:hover { --tw-gradient-to: #db2777; }
+  .opacity-50 { opacity: 0.5; }
+  .cursor-not-allowed { cursor: not-allowed; }
+`;
+
+// Inject styles only once
+let stylesInjected = false;
+const injectTailwindStyles = () => {
+  if (!stylesInjected && typeof document !== 'undefined') {
+    const styleElement = document.createElement('style');
+    styleElement.textContent = tailwindStyles;
+    document.head.appendChild(styleElement);
+    stylesInjected = true;
+  }
+};
+
 const AudioRecorder: React.FC<AudioRecorderProps> = ({
   apiKey,
   speciality,
@@ -17,6 +127,11 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   className = "",
   style,
 }) => {
+  // Inject Tailwind styles on component mount
+  React.useEffect(() => {
+    injectTailwindStyles();
+  }, []);
+
   const {
     mediaStreamRef,
     startRecording,
@@ -42,18 +157,28 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     progress,
     statusMessage,
   } = useAudioRecorder({
+    apiKey: apiKey,
     speciality: speciality,
     patientName: patientName,
     patientId: patientId,
     onTranscriptionUpdate: (text, sessionId) => {
-      console.log("Transcription update:", text, sessionId);
-      onTranscriptionUpdate && onTranscriptionUpdate(text, sessionId);
+      console.log("onTranscriptionUpdate called with text:", text, "sessionId:", sessionId);
+      if (text.length > 0) {
+        console.log("Transcription update:", text, sessionId);
+        onTranscriptionUpdate && onTranscriptionUpdate(text, sessionId);
+      }
     },
     onTranscriptionComplete: (text, classification, sessionId) => {
-      console.log("Transcription complete:", text, classification, sessionId);
+      console.log(
+        "onTranscriptionComplete called with text:",
+        text,
+        "classification:",
+        classification,
+        "sessionId:",
+        sessionId
+      );
       onTranscriptionComplete && onTranscriptionComplete(text, classification, sessionId);
     },
-    apiKey: apiKey,
   });
 
   const isEmergencyOrInPatient = speciality === "emergency" || speciality === "in_patient";
@@ -208,8 +333,6 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   const closeToast = () => {
     setToast({ ...toast, show: false });
   };
-
-
 
   return (
     <div className="space-y-4">
