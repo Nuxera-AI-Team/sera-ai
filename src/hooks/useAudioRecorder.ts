@@ -7,6 +7,7 @@ import { ClassificationInfoResponse } from "../types";
 
 interface AudioRecorderHookProps {
   apiKey: string;
+  apiBaseUrl?: string;
   speciality: string;
   patientId?: number;
   patientName?: string;
@@ -52,10 +53,13 @@ interface UseAudioRecorderReturn {
   statusMessage: string;
 }
 
-const apiBaseUrl = "http://localhost:3000"; // Replace with your actual API base URL  
+// Internal API configuration - this will be used by the npm package
+// Change this URL to match your actual API endpoint before publishing
+const API_BASE_URL = "https://nuxera.cloud";
 
 const useAudioRecorder = ({
   apiKey,
+  apiBaseUrl = API_BASE_URL,
   speciality,
   patientId,
   patientName,

@@ -10,6 +10,11 @@ export interface AudioRecorderProps {
   apiKey: string;
 
   /**
+   * Base URL for the API endpoints (optional, defaults to production)
+   */
+  apiBaseUrl?: string;
+
+  /**
    * Patient ID associated with the recording (optional)
    */
   patientId?: number;

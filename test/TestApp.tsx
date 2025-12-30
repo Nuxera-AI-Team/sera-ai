@@ -11,6 +11,7 @@ function TestApp() {
       <AudioRecorder
         apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
         speciality="general_practice"
+        apiBaseUrl="http://localhost:3000"
         onTranscriptionUpdate={(text, sessionId) => {
           console.log("Transcription update:", text, sessionId);
         }}

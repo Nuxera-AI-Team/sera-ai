@@ -117,6 +117,7 @@ const injectTailwindStyles = () => {
 
 const AudioRecorder: React.FC<AudioRecorderProps> = ({
   apiKey,
+  apiBaseUrl,
   speciality,
   patientId,
   patientName,
@@ -158,6 +159,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     statusMessage,
   } = useAudioRecorder({
     apiKey: apiKey,
+    apiBaseUrl: apiBaseUrl,
     speciality: speciality,
     patientName: patientName,
     patientId: patientId,
