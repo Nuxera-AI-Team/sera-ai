@@ -1,7 +1,7 @@
 {
   "name": "sera-ai",
   "version": "1.0.0",
-  "description": "Nuxera ambiant scribing",
+  "description": "React component for real-time audio recording with AI transcription - works out of the box with embedded workers",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -26,11 +26,17 @@
   },
   "keywords": [
     "react",
-    "component",
-    "sera",
-    "widget",
-    "nuxera",
-    "ai"
+    "audio",
+    "recording",
+    "transcription",
+    "ai",
+    "speech-to-text",
+    "voice",
+    "microphone",
+    "web-audio",
+    "real-time",
+    "embedded-workers",
+    "self-contained"
   ],
   "author": "Nuxera AI",
   "license": "ISC",

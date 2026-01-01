@@ -51,11 +51,218 @@ interface UseAudioRecorderReturn {
   isConverting: boolean;
   progress: number;
   statusMessage: string;
+
+  // Add test function for debugging
+  testAudioCapture: () => Promise<void>;
 }
 
 // Internal API configuration - this will be used by the npm package
 // Change this URL to match your actual API endpoint before publishing
 const API_BASE_URL = "https://nuxera.cloud";
+
+// Embedded Audio Processor Worker - no external files needed
+const createAudioProcessorWorker = () => {
+  const workerCode = `
+    class AudioProcessor extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this._buffer = [];
+        this._isStopped = false;
+        this._isPaused = false;
+        this._uploadChunk = false;
+        this._uploadingChunk = false;
+        
+        this._audioLevelCheckInterval = 0;
+        this._audioLevelCheckFrequency = 128;
+        this._silentSampleCount = 0;
+        this._maxSilentSamples = 44100 * 30;
+        this._audioThreshold = 0.002; // Increased from 0.001 to better detect speech
+        this._hasDetectedAudio = false;
+        this._totalSilentTime = 0;
+        this._lastAudioTime = 0;
+        this._recordingStartTime = Date.now();
+        this._initialSilenceThreshold = 44100 * 10;
+        this._isInitialPhase = true;
+        this._audioActivityBuffer = []; // Track recent audio activity
+        this._bufferSize = 0; // Track total samples in buffer
+
+        this.port.onmessage = (event) => {
+          if (event.data.command === "stop") {
+            this._isStopped = true;
+            // Ensure we have valid audio data before sending
+            if (this._buffer.length > 0) {
+              // Properly flatten the buffer by concatenating Float32Arrays
+              let totalLength = 0;
+              for (let i = 0; i < this._buffer.length; i++) {
+                totalLength += this._buffer[i].length;
+              }
+              
+              const flat = new Float32Array(totalLength);
+              let offset = 0;
+              for (let i = 0; i < this._buffer.length; i++) {
+                flat.set(this._buffer[i], offset);
+                offset += this._buffer[i].length;
+              }
+              
+              console.log('[AUDIO-DEBUG] Creating final chunk:', flat.length, 'samples, first few values:', Array.from(flat.slice(0, 5)));
+              this.port.postMessage(
+                {
+                  command: "finalChunk",
+                  audioBuffer: flat.buffer,
+                },
+                [flat.buffer]
+              );
+            } else {
+              console.log('[AUDIO-DEBUG] No audio buffer to send as final chunk');
+              // Send empty final chunk to complete the session
+              const emptyBuffer = new Float32Array(1000);
+              this.port.postMessage(
+                {
+                  command: "finalChunk", 
+                  audioBuffer: emptyBuffer.buffer,
+                },
+                [emptyBuffer.buffer]
+              );
+            }
+            this._buffer = [];
+          }
+
+          if (event.data.command === "uploadChunk") {
+            this._uploadChunk = true;
+          }
+
+          if (event.data.command === "resetUploadChunk") {
+            this._uploadChunk = false;
+            this._uploadingChunk = false;
+            this._buffer = [];
+          }
+
+          if (event.data.command === "pause") {
+            this._isPaused = true;
+          }
+
+          if (event.data.command === "resume") {
+            this._isPaused = false;
+          }
+        };
+      }
+
+      process(inputs, outputs) {
+        if (this._isStopped || this._isPaused) {
+          return true;
+        }
+
+        const input = inputs[0];
+        if (input && input.length > 0) {
+          const samples = input[0];
+          
+          let audioLevel = 0;
+          for (let i = 0; i < samples.length; i++) {
+            audioLevel += Math.abs(samples[i]);
+          }
+          audioLevel /= samples.length;
+
+          this._audioLevelCheckInterval++;
+          if (this._audioLevelCheckInterval >= this._audioLevelCheckFrequency) {
+            this.port.postMessage({
+              command: "audioLevel",
+              level: audioLevel,
+            });
+            this._audioLevelCheckInterval = 0;
+            
+            // Debug: Log audio capture status every few seconds
+            if (this._audioLevelCheckInterval % 1000 === 0) {
+              console.log('[AUDIO-DEBUG] Audio Level:', audioLevel.toFixed(4), 'Silent Samples:', this._silentSampleCount);
+            }
+          }
+
+          if (audioLevel > this._audioThreshold) {
+            this._hasDetectedAudio = true;
+            this._isInitialPhase = false;
+            this._silentSampleCount = 0;
+            this._lastAudioTime = Date.now();
+            
+            // Track audio activity for chunk validation
+            this._audioActivityBuffer.push(audioLevel);
+            if (this._audioActivityBuffer.length > 1000) {
+              this._audioActivityBuffer.shift(); // Keep only recent activity
+            }
+          } else {
+            this._silentSampleCount += samples.length;
+            
+            if (this._isInitialPhase && this._silentSampleCount > this._initialSilenceThreshold) {
+              this.port.postMessage({
+                command: "noAudioDetected",
+                message: "No audio input detected after 10 seconds. Please check your microphone."
+              });
+              return true;
+            }
+            
+            if (this._hasDetectedAudio && this._silentSampleCount > this._maxSilentSamples) {
+              this.port.postMessage({
+                command: "noAudioDetected",
+                message: "No audio detected for 30 seconds. Recording may have issues."
+              });
+            }
+          }
+
+          this._buffer.push(new Float32Array(samples));
+          this._bufferSize += samples.length;
+
+          if (this._uploadChunk && !this._uploadingChunk) {
+            this._uploadingChunk = true;
+            
+            // Check if buffer has meaningful audio content before uploading
+            const recentActivity = this._audioActivityBuffer.slice(-100); // Last 100 activity measurements
+            const hasRecentAudio = recentActivity.some(level => level > this._audioThreshold * 2);
+            
+            // Properly flatten the buffer by concatenating Float32Arrays
+            let totalLength = 0;
+            for (let i = 0; i < this._buffer.length; i++) {
+              totalLength += this._buffer[i].length;
+            }
+            
+            const flat = new Float32Array(totalLength);
+            let offset = 0;
+            for (let i = 0; i < this._buffer.length; i++) {
+              flat.set(this._buffer[i], offset);
+              offset += this._buffer[i].length;
+            }
+            
+            // Only upload if we have recent audio activity or if this is a significant buffer
+            if (hasRecentAudio || this._bufferSize > 44100 * 30) { // 30 seconds minimum
+              this.port.postMessage(
+                {
+                  command: "chunk",
+                  audioBuffer: flat.buffer,
+                  hasActivity: hasRecentAudio,
+                  bufferDuration: this._bufferSize / 44100
+                },
+                [flat.buffer]
+              );
+              // Clear buffer after successful upload
+              this._buffer = [];
+              this._bufferSize = 0;
+            } else {
+              console.log('[SKIP] Skipping silent chunk upload (' + (this._bufferSize / 44100).toFixed(1) + 's, no recent activity)');
+              // Don't clear buffer for skipped chunks, keep accumulating
+            }
+            
+            this._uploadChunk = false;
+            this._uploadingChunk = false;
+          }
+        }
+
+        return true;
+      }
+    }
+
+    registerProcessor("audio-processor", AudioProcessor);
+  `;
+
+  const blob = new Blob([workerCode], { type: "application/javascript" });
+  return URL.createObjectURL(blob);
+};
 
 const useAudioRecorder = ({
   apiKey,
@@ -165,7 +372,7 @@ const useAudioRecorder = ({
       // Combine all audio chunks into one
       const combinedAudio = combineAudioChunks(audioChunks);
 
-      console.log("🔊 Combined audio for retry:", {
+      console.log("[AUDIO] Combined audio for retry:", {
         combinedLength: combinedAudio.length,
         hasAudio: combinedAudio.length > 0,
       });
@@ -186,9 +393,9 @@ const useAudioRecorder = ({
       // Send as first AND final chunk to create complete new session
       await uploadChunkToServerRef.current(combinedAudio, true, 0, true, false);
 
-      console.log("✅ Retry upload completed successfully");
+      console.log("[SUCCESS] Retry upload completed successfully");
     } catch (error) {
-      console.error("❌ Retry session failed:", error);
+      console.error("[ERROR] Retry session failed:", error);
       throw error;
     }
   });
@@ -259,7 +466,7 @@ const useAudioRecorder = ({
         sessionIdRef.current || localSessionIdRef.current || ""
       );
     }
-  }, [alreadyDoneTranscription, onTranscriptionUpdate]);
+  }, [alreadyDoneTranscription]);
 
   // Add useEffect to track speciality changes
   React.useEffect(() => {
@@ -297,7 +504,7 @@ const useAudioRecorder = ({
   }, []);
 
   // Microphone validation and detection
-  const validateMicrophoneAccess = React.useCallback(async () => {
+  const validateMicrophoneAccess = React.useCallback(async (): Promise<boolean> => {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const audioInputDevices = devices.filter((device) => device.kind === "audioinput");
@@ -321,12 +528,14 @@ const useAudioRecorder = ({
         const track = audioTracks[0];
         const settings = track.getSettings();
         setCurrentDeviceId(settings.deviceId || null);
-        console.log("Microphone validated:", track.label, settings.deviceId);
+        console.log(
+          `[AUDIO-DEBUG] Microphone validated: ${track.label}, deviceId=${settings.deviceId}, sampleRate=${settings.sampleRate}, channelCount=${settings.channelCount}`
+        );
       }
 
-      // Clean up test stream
-      testStream.getTracks().forEach((track) => track.stop());
-      setError(null); // Clear any previous errors
+      // Clean up the test stream
+      testStream.getTracks().forEach(track => track.stop());
+      
       return true;
     } catch (error) {
       console.error("Microphone validation failed:", error);
@@ -408,9 +617,9 @@ const useAudioRecorder = ({
       if (audioData && localSessionIdRef.current && !retry) {
         try {
           await appendAudioToSession(localSessionIdRef.current, audioData, sequence);
-          console.log(`✅ Successfully saved audio chunk ${sequence} to local session`);
+          console.log(`[SUCCESS] Successfully saved audio chunk ${sequence} to local session`);
         } catch (error) {
-          console.error(`❌ Failed to save audio to local session:`, error);
+          console.error(`[ERROR] Failed to save audio to local session:`, error);
         }
       }
 
@@ -422,10 +631,61 @@ const useAudioRecorder = ({
 
             // Prepare audio file first
             if (!audioData || audioData.length === 0) {
+              console.log(
+                `[AUDIO-DEBUG] No audio data: audioData=${audioData}, length=${audioData?.length || 0}`
+              );
               if (retry) {
                 throw new AbortError("No audio data provided for retry");
               }
               throw new Error("No audio data provided");
+            }
+
+            console.log(
+              `[AUDIO-DEBUG] Processing audio chunk: ${audioData.length} samples, isFinal=${isFinalChunk}, sequence=${sequence}`
+            );
+
+            console.log(
+              `🎵 Processing audio chunk: ${audioData.length} samples (${(audioData.length / 44100).toFixed(2)}s)`
+            );
+
+            // Check if audio data has any meaningful content
+            let hasAudio = false;
+            let maxAmplitude = 0;
+            let nonZeroSamples = 0;
+
+            for (let i = 0; i < audioData.length; i++) {
+              const amplitude = Math.abs(audioData[i]);
+              if (amplitude > maxAmplitude) maxAmplitude = amplitude;
+              if (amplitude > 0.001) {
+                hasAudio = true;
+                nonZeroSamples++;
+              }
+            }
+
+            const audioPercentage = nonZeroSamples / audioData.length;
+            console.log(
+              `[AUDIO] Audio validation: hasAudio=${hasAudio}, maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%`
+            );
+
+            // Skip completely silent chunks to avoid empty transcriptions
+            if (!hasAudio || maxAmplitude < 0.001 || audioPercentage < 0.01) {
+              console.log(
+                `[SKIP] Skipping silent chunk (${audioPercentage < 0.01 ? "too little audio content" : "completely silent"})`
+              );
+
+              // For final chunks, we still need to send something to close the session
+              if (!isFinalChunk) {
+                console.log(`[OUT] Non-final silent chunk skipped entirely`);
+                return; // Skip this chunk entirely
+              } else {
+                console.log(`[OUT] Final silent chunk - will send minimal audio to close session`);
+                // For final chunks, create minimal audio to ensure session closure
+                const minimalAudio = new Float32Array(1000); // 0.023 seconds of silence
+                for (let i = 0; i < minimalAudio.length; i += 100) {
+                  minimalAudio[i] = 0.001; // Add tiny audio blips
+                }
+                audioData = minimalAudio;
+              }
             }
 
             const sampleRate = audioContextRef.current?.sampleRate || 16000;
@@ -438,20 +698,50 @@ const useAudioRecorder = ({
               throw new Error("WAV conversion failed through FFmpeg");
             }
 
+            console.log(`[INFO] Original WAV file: ${wavFile.size} bytes, ${wavFile.name}`);
+
             // Apply silence removal if enabled
             if (currentIsLoaded && removeSilenceRef.current) {
               try {
-                console.log("Attempting to remove silence from audio chunk...");
+                console.log("[SILENCE] Attempting to remove silence from audio chunk...");
                 const processedFile = await removeSilence(wavFile);
                 if (processedFile) {
-                  console.log("Silence removed successfully");
-                  wavFile = processedFile;
+                  console.log(
+                    `[SUCCESS] Silence removed successfully: ${processedFile.size} bytes (was ${wavFile.size} bytes)`
+                  );
+
+                  // Check if the processed file is too small (less than 1KB indicates likely over-processing)
+                  if (processedFile.size < 1000) {
+                    console.warn(
+                      `[WARN] Processed file very small (${processedFile.size} bytes), using original file`
+                    );
+                    // Use original file if processed file is suspiciously small
+                  } else {
+                    wavFile = processedFile;
+                  }
                 } else {
                   console.warn("Silence removal returned null, using original file");
                 }
               } catch (silenceError) {
                 console.warn("Silence removal failed, using original file:", silenceError);
               }
+            } else {
+              console.log("[SILENCE] Silence removal disabled or not loaded");
+            }
+
+            console.log(
+              `[OUT] Final file for transcription: ${wavFile.size} bytes, ${wavFile.name}`
+            );
+
+            // Final validation: check if file is too small to contain meaningful audio
+            if (wavFile.size < 500) {
+              // Less than 500 bytes is likely just WAV header
+              console.error(
+                `[ERROR] File too small (${wavFile.size} bytes) - likely contains no audio data`
+              );
+              throw new Error(
+                `Audio file too small (${wavFile.size} bytes) - no meaningful audio content`
+              );
             }
 
             // Prepare request data
@@ -606,7 +896,7 @@ const useAudioRecorder = ({
             randomize: true,
             onFailedAttempt: (error) => {
               console.warn(
-                `⚠️ Transcribe attempt ${error.attemptNumber} failed for sequence ${sequence}:`,
+                `[WARN] Transcribe attempt ${error.attemptNumber} failed for sequence ${sequence}:`,
                 {
                   error: error,
                   retriesLeft: error.retriesLeft,
@@ -631,13 +921,21 @@ const useAudioRecorder = ({
         if (error && error.includes("Retrying")) {
           setError(null);
         }
+        if (!data) {
+          throw new Error("No data received from transcription server");
+        }
+
+        console.log(`[SUCCESS] Received transcription for sequence ${sequence}:`, data);
 
         // Update server session ID when received from server
         if (retry && data.sessionId) {
-          console.log("✅ Retry successful - received new server session ID:", data.sessionId);
+          console.log(
+            "[SUCCESS] Retry successful - received new server session ID:",
+            data.sessionId
+          );
           sessionIdRef.current = data.sessionId;
         } else if (!retry && data.sessionId && !sessionIdRef.current) {
-          console.log("✅ Received initial server session ID:", data.sessionId);
+          console.log("[SUCCESS] Received initial server session ID:", data.sessionId);
           sessionIdRef.current = data.sessionId;
         }
 
@@ -663,7 +961,7 @@ const useAudioRecorder = ({
           }
         }
       } catch (err) {
-        console.error(`❌ Upload error occurred after all retries:`, err);
+        console.error(`[ERROR] Upload error occurred after all retries:`, err);
 
         // Include conversion errors in error handling
         if (conversionError) {
@@ -843,7 +1141,13 @@ const useAudioRecorder = ({
       }
 
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      await audioContext.audioWorklet.addModule("/audio-processor.js");
+
+      // Create audio processor worker dynamically
+      const processorUrl = createAudioProcessorWorker();
+      await audioContext.audioWorklet.addModule(processorUrl);
+
+      // Clean up the blob URL
+      URL.revokeObjectURL(processorUrl);
 
       const processor = new AudioWorkletNode(audioContext, "audio-processor");
 
@@ -861,10 +1165,32 @@ const useAudioRecorder = ({
         const sequence = sequenceCounterRef.current++;
 
         if (command === "finalChunk" && audioBuffer) {
-          console.log("Received finalChunk with audioBuffer", audioBuffer);
-          enqueueChunk(new Float32Array(audioBuffer), true, sequence);
+          const audioArray = new Float32Array(audioBuffer);
+          
+          // Validate audio data integrity
+          let validSamples = 0;
+          let maxVal = -Infinity;
+          let minVal = Infinity;
+          
+          for (let i = 0; i < audioArray.length; i++) {
+            const sample = audioArray[i];
+            if (!isNaN(sample) && isFinite(sample)) {
+              validSamples++;
+              maxVal = Math.max(maxVal, Math.abs(sample));
+              minVal = Math.min(minVal, Math.abs(sample));
+            }
+          }
+          
+          console.log(
+            `[AUDIO-DEBUG] Received finalChunk: ${audioArray.length} samples, ${validSamples} valid, max=${maxVal === -Infinity ? 'N/A' : maxVal.toFixed(4)}, min=${minVal === Infinity ? 'N/A' : minVal.toFixed(4)}`
+          );
+          enqueueChunk(audioArray, true, sequence);
         } else if (command === "uploadChunk" && audioBuffer) {
-          enqueueChunk(new Float32Array(audioBuffer), false, sequence);
+          const audioArray = new Float32Array(audioBuffer);
+          console.log(
+            `[AUDIO-DEBUG] Received uploadChunk: ${audioArray.length} samples, sequence=${sequence}`
+          );
+          enqueueChunk(audioArray, false, sequence);
         } else if (command === "pauseChunk" && audioBuffer) {
           console.log("Received pauseChunk with audioBuffer", audioBuffer);
           enqueueChunk(new Float32Array(audioBuffer), false, sequence, true);
@@ -1131,6 +1457,53 @@ const useAudioRecorder = ({
     });
   };
 
+  // Add a test function to verify audio capture
+  const testAudioCapture = useCallback(async () => {
+    try {
+      console.log("[AUDIO-TEST] Starting audio capture test...");
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+
+      console.log("[AUDIO-TEST] Got media stream:", stream.id);
+
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      let testCount = 0;
+      const testInterval = setInterval(() => {
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        const max = Math.max(...dataArray);
+
+        console.log(
+          `[AUDIO-TEST] Frame ${testCount}: avg=${average.toFixed(2)}, max=${max}, hasSound=${max > 10 ? "YES" : "NO"}`
+        );
+
+        testCount++;
+        if (testCount >= 10) {
+          clearInterval(testInterval);
+          stream.getTracks().forEach((track) => track.stop());
+          audioContext.close();
+          console.log("[AUDIO-TEST] Audio capture test complete");
+        }
+      }, 500);
+    } catch (error) {
+      console.error("[AUDIO-TEST] Audio capture test failed:", error);
+    }
+  }, []);
+
   return {
     mediaStreamRef,
     startRecording,
@@ -1159,6 +1532,8 @@ const useAudioRecorder = ({
     isConverting,
     progress,
     statusMessage,
+    // Add test function for debugging
+    testAudioCapture,
   };
 };
 
