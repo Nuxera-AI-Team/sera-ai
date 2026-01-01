@@ -104,7 +104,6 @@ const createAudioProcessorWorker = () => {
                 offset += this._buffer[i].length;
               }
               
-              console.log('[AUDIO-DEBUG] Creating final chunk:', flat.length, 'samples, first few values:', Array.from(flat.slice(0, 5)));
               this.port.postMessage(
                 {
                   command: "finalChunk",
@@ -113,7 +112,6 @@ const createAudioProcessorWorker = () => {
                 [flat.buffer]
               );
             } else {
-              console.log('[AUDIO-DEBUG] No audio buffer to send as final chunk');
               // Send empty final chunk to complete the session
               const emptyBuffer = new Float32Array(1000);
               this.port.postMessage(
@@ -172,7 +170,6 @@ const createAudioProcessorWorker = () => {
             
             // Debug: Log audio capture status every few seconds
             if (this._audioLevelCheckInterval % 1000 === 0) {
-              console.log('[AUDIO-DEBUG] Audio Level:', audioLevel.toFixed(4), 'Silent Samples:', this._silentSampleCount);
             }
           }
 
@@ -528,14 +525,12 @@ const useAudioRecorder = ({
         const track = audioTracks[0];
         const settings = track.getSettings();
         setCurrentDeviceId(settings.deviceId || null);
-        console.log(
-          `[AUDIO-DEBUG] Microphone validated: ${track.label}, deviceId=${settings.deviceId}, sampleRate=${settings.sampleRate}, channelCount=${settings.channelCount}`
-        );
+        console.log();
       }
 
       // Clean up the test stream
-      testStream.getTracks().forEach(track => track.stop());
-      
+      testStream.getTracks().forEach((track) => track.stop());
+
       return true;
     } catch (error) {
       console.error("Microphone validation failed:", error);
@@ -631,21 +626,17 @@ const useAudioRecorder = ({
 
             // Prepare audio file first
             if (!audioData || audioData.length === 0) {
-              console.log(
-                `[AUDIO-DEBUG] No audio data: audioData=${audioData}, length=${audioData?.length || 0}`
-              );
+              console.log();
               if (retry) {
                 throw new AbortError("No audio data provided for retry");
               }
               throw new Error("No audio data provided");
             }
 
-            console.log(
-              `[AUDIO-DEBUG] Processing audio chunk: ${audioData.length} samples, isFinal=${isFinalChunk}, sequence=${sequence}`
-            );
+            console.log();
 
             console.log(
-              `🎵 Processing audio chunk: ${audioData.length} samples (${(audioData.length / 44100).toFixed(2)}s)`
+              `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / 44100).toFixed(2)}s)`
             );
 
             // Check if audio data has any meaningful content
@@ -1166,30 +1157,10 @@ const useAudioRecorder = ({
 
         if (command === "finalChunk" && audioBuffer) {
           const audioArray = new Float32Array(audioBuffer);
-          
-          // Validate audio data integrity
-          let validSamples = 0;
-          let maxVal = -Infinity;
-          let minVal = Infinity;
-          
-          for (let i = 0; i < audioArray.length; i++) {
-            const sample = audioArray[i];
-            if (!isNaN(sample) && isFinite(sample)) {
-              validSamples++;
-              maxVal = Math.max(maxVal, Math.abs(sample));
-              minVal = Math.min(minVal, Math.abs(sample));
-            }
-          }
-          
-          console.log(
-            `[AUDIO-DEBUG] Received finalChunk: ${audioArray.length} samples, ${validSamples} valid, max=${maxVal === -Infinity ? 'N/A' : maxVal.toFixed(4)}, min=${minVal === Infinity ? 'N/A' : minVal.toFixed(4)}`
-          );
+          console.log(`Received final chunk: ${audioArray.length} samples`);
           enqueueChunk(audioArray, true, sequence);
         } else if (command === "uploadChunk" && audioBuffer) {
           const audioArray = new Float32Array(audioBuffer);
-          console.log(
-            `[AUDIO-DEBUG] Received uploadChunk: ${audioArray.length} samples, sequence=${sequence}`
-          );
           enqueueChunk(audioArray, false, sequence);
         } else if (command === "pauseChunk" && audioBuffer) {
           console.log("Received pauseChunk with audioBuffer", audioBuffer);
@@ -1460,7 +1431,7 @@ const useAudioRecorder = ({
   // Add a test function to verify audio capture
   const testAudioCapture = useCallback(async () => {
     try {
-      console.log("[AUDIO-TEST] Starting audio capture test...");
+      console.log("Audio Test Starting audio capture test...");
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -1470,7 +1441,7 @@ const useAudioRecorder = ({
         },
       });
 
-      console.log("[AUDIO-TEST] Got media stream:", stream.id);
+      console.log("Audio Test Got media stream:", stream.id);
 
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       const source = audioContext.createMediaStreamSource(stream);
@@ -1488,7 +1459,7 @@ const useAudioRecorder = ({
         const max = Math.max(...dataArray);
 
         console.log(
-          `[AUDIO-TEST] Frame ${testCount}: avg=${average.toFixed(2)}, max=${max}, hasSound=${max > 10 ? "YES" : "NO"}`
+          `Audio Test Frame ${testCount}: avg=${average.toFixed(2)}, max=${max}, hasSound=${max > 10 ? "YES" : "NO"}`
         );
 
         testCount++;
@@ -1496,11 +1467,11 @@ const useAudioRecorder = ({
           clearInterval(testInterval);
           stream.getTracks().forEach((track) => track.stop());
           audioContext.close();
-          console.log("[AUDIO-TEST] Audio capture test complete");
+          console.log("Audio Test Audio capture test complete");
         }
       }, 500);
     } catch (error) {
-      console.error("[AUDIO-TEST] Audio capture test failed:", error);
+      console.error("Audio Test Audio capture test failed:", error);
     }
   }, []);
 
