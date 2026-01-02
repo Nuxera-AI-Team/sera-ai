@@ -17,6 +17,12 @@ A React component library for real-time audio recording with AI-powered transcri
 ## Installation
 
 ```bash
+npm install sera-ai lucide-react
+```
+
+**Note**: `lucide-react` is required as a peer dependency for the UI icons. If you already have it installed, you can just install:
+
+```bash
 npm install sera-ai
 ```
 
