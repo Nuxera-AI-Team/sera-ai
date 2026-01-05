@@ -5,6 +5,8 @@ const API_BASE_URL = "https://nuxera.cloud";
 
 interface AudioDictationHookProps {
   onDictationComplete: (message: string) => void;
+  onDictationStart?: () => void;
+  onProcessingStart?: () => void;
 
   apiKey?: string;
   apiBaseUrl?: string;
@@ -20,6 +22,8 @@ interface AudioDictationHookProps {
 
 const useAudioDictation = ({
   onDictationComplete,
+  onDictationStart,
+  onProcessingStart,
   apiKey,
   apiBaseUrl = API_BASE_URL,
   appendMode = true,
@@ -147,6 +151,7 @@ const useAudioDictation = ({
       processorRef.current = processor;
 
       setIsDictating(true);
+      onDictationStart?.();
       console.log("Recording started successfully");
     } catch (error) {
       console.error("Error starting dictation:", error);
@@ -292,6 +297,7 @@ const useAudioDictation = ({
       console.log(`Processing dictation with audio data length: ${audioData.length}`);
       console.log(`Using format: ${selectedFormat}`);
       setIsProcessing(true);
+      onProcessingStart?.();
 
       const wavBlob = encodeWAV(audioData);
       console.log(`Sending audio to dictation API (${wavBlob.size / 1024} KB)`);

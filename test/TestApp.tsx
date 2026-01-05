@@ -157,6 +157,12 @@ const TestApp = () => {
               apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
               apiBaseUrl="http://localhost:3000"
               doctorName="Dr. Smith"
+              onDictationStart={() => {
+                console.log("--- Dictation started");
+              }}
+              onProcessingStart={() => {
+                console.log(" --- Processing started");
+              }}
               onDictationComplete={(text) => {
                 console.log("Dictated:", text);
               }}

@@ -13,6 +13,8 @@ export interface AudioDictationProps {
   specialty?: string;
   selectedFormat?: "json" | "hl7" | "fhir";
   onDictationComplete: (message: string) => void;
+  onDictationStart?: () => void;
+  onProcessingStart?: () => void;
   className?: string;
   style?: React.CSSProperties;
   buttonText?: string;
@@ -101,6 +103,8 @@ const AudioDictation: React.FC<AudioDictationProps> = ({
   specialty = "general",
   selectedFormat = "json",
   onDictationComplete,
+  onDictationStart,
+  onProcessingStart,
   className = "",
   style,
   buttonText,
@@ -113,6 +117,8 @@ const AudioDictation: React.FC<AudioDictationProps> = ({
 
   const { startDictating, stopDictating, dictationError, isDictating, isProcessing } = useAudioDictation({
     onDictationComplete,
+    onDictationStart,
+    onProcessingStart,
     apiKey,
     apiBaseUrl,
     appendMode,
