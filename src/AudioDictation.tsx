@@ -106,17 +106,12 @@ const AudioDictation: React.FC<AudioDictationProps> = ({
   buttonText,
   placeholder = "Click to dictate...",
 }) => {
-  const [isDictating, setIsDictating] = React.useState(false);
-  const [isProcessing, setIsProcessing] = React.useState(false);
-
   // Inject styles on component mount
   React.useEffect(() => {
     injectDictationStyles();
   }, []);
 
-  const { startDictating, stopDictating, dictationError } = useAudioDictation({
-    setIsProcessing,
-    setIsDictating,
+  const { startDictating, stopDictating, dictationError, isDictating, isProcessing } = useAudioDictation({
     onDictationComplete,
     apiKey,
     apiBaseUrl,

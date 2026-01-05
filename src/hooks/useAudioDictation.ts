@@ -4,9 +4,8 @@ import useHL7FHIRConverter from "./useHL7FHIRConverter";
 const API_BASE_URL = "https://nuxera.cloud";
 
 interface AudioDictationHookProps {
-  setIsProcessing: (isProcessing: boolean) => void;
-  setIsDictating: (isDictating: boolean) => void;
   onDictationComplete: (message: string) => void;
+
   apiKey?: string;
   apiBaseUrl?: string;
   appendMode?: boolean;
@@ -20,8 +19,6 @@ interface AudioDictationHookProps {
 }
 
 const useAudioDictation = ({
-  setIsProcessing,
-  setIsDictating,
   onDictationComplete,
   apiKey,
   apiBaseUrl = API_BASE_URL,
@@ -34,6 +31,8 @@ const useAudioDictation = ({
   selectedFormat = "json",
 }: AudioDictationHookProps) => {
   const [dictationError, setDictationError] = useState<string | null>(null);
+  const [isDictating, setIsDictating] = useState<boolean>(false);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -397,7 +396,7 @@ const useAudioDictation = ({
     }
   };
 
-  return { startDictating, stopDictating, dictationError };
+  return { startDictating, stopDictating, dictationError, isDictating, isProcessing };
 };
 
 export default useAudioDictation;
