@@ -55,6 +55,68 @@ export default App;
 
 That's it! No configuration files, no worker files to copy, no CSS frameworks to install.
 
+## Audio Dictation Component
+
+For shorter dictation tasks, use the `AudioDictation` component which provides push-to-talk functionality:
+
+```tsx
+import React, { useState } from 'react';
+import { AudioDictation } from 'sera-ai';
+
+function DictationApp() {
+  const [dictatedText, setDictatedText] = useState('');
+
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>Medical Dictation</h1>
+      
+      <AudioDictation
+        apiKey="your-api-key"
+        doctorName="Dr. Smith"
+        patientId="12345"
+        specialty="cardiology"
+        selectedFormat="json"
+        onDictationComplete={(text) => {
+          setDictatedText(prev => prev + ' ' + text);
+        }}
+      />
+      
+      <div style={{ marginTop: '20px', padding: '10px', border: '1px solid #ccc' }}>
+        <h3>Dictated Text:</h3>
+        <p>{dictatedText}</p>
+      </div>
+    </div>
+  );
+}
+```
+
+### AudioDictation Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `apiKey` | `string` | - | Your Sera AI API key |
+| `appendMode` | `boolean` | `true` | Whether to append to existing text |
+| `doctorName` | `string` | `"doctor"` | Doctor's name for the dictation |
+| `patientId` | `string` | - | Patient identifier |
+| `sessionId` | `string` | - | Session identifier |
+| `language` | `string` | `"en"` | Language code for dictation |
+| `specialty` | `string` | `"general"` | Medical specialty |
+| `selectedFormat` | `"json" \| "hl7" \| "fhir"` | `"json"` | Output format |
+| `onDictationComplete` | `(text: string) => void` | **Required** | Callback when dictation is complete |
+| `className` | `string` | - | Custom CSS classes |
+| `style` | `CSSProperties` | - | Inline styles |
+| `buttonText` | `string` | `"Hold to Dictate"` | Custom button text |
+| `placeholder` | `string` | `"Click and hold to dictate..."` | Tooltip text |
+
+### AudioDictation Features
+
+- **Push-to-talk**: Hold mouse button or spacebar to dictate
+- **Mobile support**: Touch and hold on mobile devices
+- **Visual feedback**: Button animates while recording
+- **Error handling**: Built-in error display and recovery
+- **Multiple formats**: Support for JSON, HL7, and FHIR output
+- **Real-time processing**: Immediate transcription after release
+
 ## Advanced Usage
 
 ### Medical Specialties

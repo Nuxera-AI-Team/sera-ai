@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { AudioRecorder } from "../src";
+import { AudioDictation, AudioRecorder } from "../src";
 import useAudioRecorder from "../src/hooks/useAudioRecorder";
 
 const AudioTestPanel = () => {
@@ -11,12 +11,14 @@ const AudioTestPanel = () => {
   });
 
   return (
-    <div style={{
-      backgroundColor: "#e8f4fd",
-      padding: "20px",
-      borderRadius: "8px",
-      marginBottom: "20px"
-    }}>
+    <div
+      style={{
+        backgroundColor: "#e8f4fd",
+        padding: "20px",
+        borderRadius: "8px",
+        marginBottom: "20px",
+      }}
+    >
       <h3 style={{ margin: "0 0 15px 0", color: "#0366d6" }}>Audio Capture Testing</h3>
       <div style={{ display: "flex", gap: "10px", marginBottom: "15px" }}>
         <button
@@ -27,7 +29,7 @@ const AudioTestPanel = () => {
             color: "white",
             border: "none",
             borderRadius: "4px",
-            cursor: "pointer"
+            cursor: "pointer",
           }}
         >
           Test Audio Capture
@@ -40,17 +42,22 @@ const AudioTestPanel = () => {
             color: "white",
             border: "none",
             borderRadius: "4px",
-            cursor: "pointer"
+            cursor: "pointer",
           }}
         >
           Validate Microphone
         </button>
       </div>
       <div style={{ fontSize: "14px", color: "#586069" }}>
-        <p>Audio Level: <span style={{ fontWeight: "bold" }}>{audioLevel.toFixed(4)}</span></p>
-        <p>Recording: <span style={{ fontWeight: "bold", color: isRecording ? "green" : "red" }}>
-          {isRecording ? "YES" : "NO"}
-        </span></p>
+        <p>
+          Audio Level: <span style={{ fontWeight: "bold" }}>{audioLevel.toFixed(4)}</span>
+        </p>
+        <p>
+          Recording:{" "}
+          <span style={{ fontWeight: "bold", color: isRecording ? "green" : "red" }}>
+            {isRecording ? "YES" : "NO"}
+          </span>
+        </p>
         <p style={{ fontSize: "12px", marginTop: "10px" }}>
           Open browser console to see detailed audio capture logs
         </p>
@@ -143,6 +150,15 @@ const TestApp = () => {
                 if (errorElement) {
                   errorElement.innerText = "Error: " + error;
                 }
+              }}
+            />
+
+            <AudioDictation
+              apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
+              apiBaseUrl="http://localhost:3000"
+              doctorName="Dr. Smith"
+              onDictationComplete={(text) => {
+                console.log("Dictated:", text);
               }}
             />
           </div>
