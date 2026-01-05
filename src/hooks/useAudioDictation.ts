@@ -7,6 +7,7 @@ interface AudioDictationHookProps {
   onDictationComplete: (message: string) => void;
   onDictationStart?: () => void;
   onProcessingStart?: () => void;
+  onError?: (error: string) => void;
 
   apiKey?: string;
   apiBaseUrl?: string;
@@ -24,6 +25,7 @@ const useAudioDictation = ({
   onDictationComplete,
   onDictationStart,
   onProcessingStart,
+  onError,
   apiKey,
   apiBaseUrl = API_BASE_URL,
   appendMode = true,
@@ -139,7 +141,9 @@ const useAudioDictation = ({
             setAudioBuffer(combinedBuffer);
           } else {
             console.warn("Final chunk received but no audio data accumulated");
-            setDictationError("No audio data was recorded");
+            const errorMessage = "No audio data was recorded";
+            setDictationError(errorMessage);
+            onError?.(errorMessage);
           }
         }
       };
@@ -156,7 +160,9 @@ const useAudioDictation = ({
     } catch (error) {
       console.error("Error starting dictation:", error);
       setIsDictating(false);
-      setDictationError("An error occurred while starting dictation");
+      const errorMessage = "An error occurred while starting dictation";
+      setDictationError(errorMessage);
+      onError?.(errorMessage);
     }
   };
 
@@ -234,15 +240,21 @@ const useAudioDictation = ({
           await processDictationAudio(combinedBuffer);
         } else {
           console.error("No valid audio data found");
-          setDictationError("No audio data recorded");
+          const errorMessage = "No audio data recorded";
+          setDictationError(errorMessage);
+          onError?.(errorMessage);
         }
       } else {
         console.error("No audio data to process");
-        setDictationError("No audio data to process");
+        const errorMessage = "No audio data to process";
+        setDictationError(errorMessage);
+        onError?.(errorMessage);
       }
     } catch (error) {
       console.error("Error stopping recording:", error);
-      setDictationError("An error occurred while stopping dictation");
+      const errorMessage = "An error occurred while stopping dictation";
+      setDictationError(errorMessage);
+      onError?.(errorMessage);
     } finally {
       setIsDictating(false);
       audioSamplesRef.current = [];
@@ -391,11 +403,15 @@ const useAudioDictation = ({
         onDictationComplete(convertedData.dictation);
       } else {
         console.error("No dictation text in response");
-        setDictationError("No dictation text in response");
+        const errorMessage = "No dictation text in response";
+        setDictationError(errorMessage);
+        onError?.(errorMessage);
       }
     } catch (error) {
       console.error("Error processing dictation audio:", error);
-      setDictationError("An error occurred while processing dictation");
+      const errorMessage = "An error occurred while processing dictation";
+      setDictationError(errorMessage);
+      onError?.(errorMessage);
     } finally {
       setIsProcessing(false);
       setIsDictating(false);

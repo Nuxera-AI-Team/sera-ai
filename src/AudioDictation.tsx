@@ -15,6 +15,7 @@ export interface AudioDictationProps {
   onDictationComplete: (message: string) => void;
   onDictationStart?: () => void;
   onProcessingStart?: () => void;
+  onError?: (error: string) => void;
   className?: string;
   style?: React.CSSProperties;
   buttonText?: string;
@@ -105,6 +106,7 @@ const AudioDictation: React.FC<AudioDictationProps> = ({
   onDictationComplete,
   onDictationStart,
   onProcessingStart,
+  onError,
   className = "",
   style,
   buttonText,
@@ -119,6 +121,7 @@ const AudioDictation: React.FC<AudioDictationProps> = ({
     onDictationComplete,
     onDictationStart,
     onProcessingStart,
+    onError,
     apiKey,
     apiBaseUrl,
     appendMode,
