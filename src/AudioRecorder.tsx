@@ -121,6 +121,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   speciality,
   patientId,
   patientName,
+  patientHistory,
   onTranscriptionUpdate,
   onTranscriptionComplete,
   onSuccess,
@@ -163,6 +164,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     speciality: speciality,
     patientName: patientName,
     patientId: patientId,
+    patientHistory: patientHistory,
     onTranscriptionUpdate: (text, sessionId) => {
       console.log("onTranscriptionUpdate called with text:", text, "sessionId:", sessionId);
       if (text.length > 0) {

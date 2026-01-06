@@ -6,6 +6,7 @@ interface AudioSession {
   metadata: {
     patientId?: number;
     patientName?: string;
+    patientHistory?: string;
     speciality: string;
     timestamp: number;
     totalChunks: number;
@@ -23,6 +24,7 @@ interface AudioRecoveryHookReturn {
     metadata: {
       patientId?: number;
       patientName?: string;
+      patientHistory?: string;
       speciality: string;
     }
   ) => Promise<void>;

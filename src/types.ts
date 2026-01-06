@@ -25,6 +25,11 @@ export interface AudioRecorderProps {
   patientName?: string;
 
   /**
+   * Patient history information (optional)
+   */
+  patientHistory?: string;
+
+  /**
    * Callback function called on transcription updates (optional)
    */
   onTranscriptionUpdate?: (text: string, sessionId: string) => void;

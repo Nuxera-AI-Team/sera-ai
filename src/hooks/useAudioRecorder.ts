@@ -11,6 +11,7 @@ interface AudioRecorderHookProps {
   speciality: string;
   patientId?: number;
   patientName?: string;
+  patientHistory?: string;
   selectedFormat?: "json" | "hl7" | "fhir";
   skipDiarization?: boolean;
   silenceRemoval?: boolean;
@@ -267,6 +268,7 @@ const useAudioRecorder = ({
   speciality,
   patientId,
   patientName,
+  patientHistory,
   selectedFormat = "json",
   skipDiarization = true,
   silenceRemoval = true,
@@ -785,6 +787,7 @@ const useAudioRecorder = ({
                 formData.append("model", selectedModelRef.current);
                 formData.append("doctorName", doctorName);
                 formData.append("patientName", patientName || "");
+                if (patientHistory) formData.append("patientHistory", patientHistory);
                 if (patientId) formData.append("patientId", patientId.toString());
                 formData.append("removeSilence", removeSilenceRef.current.toString());
                 formData.append("skipDiarization", skipDiarizationRef.current.toString());
@@ -1024,6 +1027,7 @@ const useAudioRecorder = ({
       skipDiarization,
       selectedFormat,
       patientName,
+      patientHistory,
       onTranscriptionComplete,
       speciality,
       removeSilence,
@@ -1100,6 +1104,7 @@ const useAudioRecorder = ({
         await createSession(localSessionId, {
           patientId,
           patientName: patientName || undefined,
+          patientHistory: patientHistory || undefined,
           speciality,
         });
       }
@@ -1218,6 +1223,7 @@ const useAudioRecorder = ({
     createSession,
     patientId,
     patientName,
+    patientHistory,
     speciality,
     currentDeviceId,
   ]);
