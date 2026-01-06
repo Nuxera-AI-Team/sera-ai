@@ -254,6 +254,151 @@ The component includes comprehensive error handling:
 />
 ```
 
+## Audio Capture Component
+
+For applications that need to handle transcription on their own servers, use the `AudioCapture` component. This component records, processes, and compresses audio but returns the raw audio data instead of sending it for transcription.
+
+```tsx
+import React from 'react';
+import { AudioCapture } from 'sera-ai';
+
+function AudioCaptureApp() {
+  const handleAudioChunk = (audioData: Float32Array, sequence: number, isFinal: boolean) => {
+    console.log(`Audio chunk ${sequence}:`, {
+      length: audioData.length,
+      duration: audioData.length / 44100,
+      isFinal
+    });
+    
+    // Send to your own server for transcription
+    sendAudioToMyServer(audioData, sequence, isFinal);
+  };
+
+  const handleAudioComplete = (finalAudio: Float32Array) => {
+    console.log('Recording complete!', finalAudio.length);
+    // Send complete audio to your server
+    sendCompleteAudioToMyServer(finalAudio);
+  };
+
+  const handleAudioFile = (audioFile: File) => {
+    console.log('Audio file ready:', audioFile.name);
+    // Upload file to your server
+    uploadFileToMyServer(audioFile);
+  };
+
+  return (
+    <div>
+      <h1>Custom Audio Processing</h1>
+      
+      {/* Basic raw audio capture */}
+      <AudioCapture
+        onAudioChunk={handleAudioChunk}
+        onAudioComplete={handleAudioComplete}
+        chunkDuration={30}
+        format="raw"
+        showDownload={true}
+      />
+      
+      {/* Advanced capture with silence removal */}
+      <AudioCapture
+        onAudioFile={handleAudioFile}
+        silenceRemoval={true}
+        chunkDuration={15}
+        format="wav"
+        showDownload={true}
+      />
+    </div>
+  );
+}
+```
+
+### AudioCapture Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `onAudioChunk` | `(audioData: Float32Array, sequence: number, isFinal: boolean) => void` | - | Called for each audio chunk during recording |
+| `onAudioComplete` | `(finalAudio: Float32Array) => void` | - | Called when recording stops with final combined audio |
+| `onAudioFile` | `(audioFile: File) => void` | - | Called with processed audio file (raw or WAV) |
+| `silenceRemoval` | `boolean` | `false` | Enable automatic silence removal processing |
+| `chunkDuration` | `number` | `30` | Duration in seconds for each audio chunk |
+| `format` | `"raw" \| "wav"` | `"raw"` | Output format for audio file |
+| `showDownload` | `boolean` | `false` | Show download button for recorded audio |
+| `className` | `string` | - | Additional CSS class names |
+| `style` | `React.CSSProperties` | - | Custom styles |
+
+### Server Integration Example
+
+Here's how you can integrate the AudioCapture component with your own server:
+
+```tsx
+// Client-side callback
+const sendAudioToServer = async (audioData: Float32Array, sequence: number, isFinal: boolean) => {
+  // Convert Float32Array to WAV file for upload
+  const wavFile = createWavFileFromFloat32Array(audioData);
+  
+  const formData = new FormData();
+  formData.append('audio', wavFile);
+  formData.append('sequence', sequence.toString());
+  formData.append('isFinal', isFinal.toString());
+  formData.append('patientId', 'patient-123');
+  formData.append('specialty', 'cardiology');
+  
+  // Send to your server
+  const response = await fetch('/api/process-audio', {
+    method: 'POST',
+    body: formData
+  });
+  
+  const result = await response.json();
+  console.log('Server response:', result);
+};
+```
+
+```javascript
+// Server-side processing (Node.js example)
+app.post('/api/process-audio', upload.single('audio'), async (req, res) => {
+  try {
+    const { sequence, isFinal, patientId, specialty } = req.body;
+    const audioFile = req.file;
+    
+    // Forward to Nuxera API for transcription
+    const transcriptionResponse = await fetch('https://nuxera.cloud/v1/transcribe', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${YOUR_API_KEY}`
+      },
+      body: createNuxeraFormData(audioFile, { patientId, specialty, sequence, isFinal })
+    });
+    
+    const transcription = await transcriptionResponse.json();
+    
+    // Process and return results
+    res.json({
+      success: true,
+      transcription: transcription.text,
+      classification: transcription.classification,
+      sequence: parseInt(sequence)
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+```
+
+### Audio Processing Features
+
+The AudioCapture component provides the same advanced audio processing as AudioRecorder:
+
+- **Real-time audio visualization** - Live waveform display during recording
+- **Automatic silence removal** - Optional FFmpeg-based silence detection and removal
+- **Audio compression** - Optimized audio encoding for efficient transmission
+- **Chunk-based processing** - Configurable chunk duration for streaming or batch processing
+- **Multiple output formats** - Raw Float32Array data or processed WAV files
+- **Device management** - Automatic microphone detection and selection
+- **Session recovery** - Built-in error handling and retry mechanisms
+- **Audio level monitoring** - Real-time audio input level detection
+
 ## Audio Controls
 
 The component provides built-in controls for:
