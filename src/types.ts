@@ -30,6 +30,14 @@ export interface AudioRecorderProps {
   patientHistory?: string;
 
   /**
+   * Format for API requests and responses (optional, defaults to "json")
+   * - "json": Standard JSON format
+   * - "hl7": HL7 v2.5 message format
+   * - "fhir": FHIR R4 Bundle format
+   */
+  selectedFormat?: "json" | "hl7" | "fhir";
+
+  /**
    * Callback function called on transcription updates (optional)
    */
   onTranscriptionUpdate?: (text: string, sessionId: string) => void;
