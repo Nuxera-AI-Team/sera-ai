@@ -599,11 +599,14 @@ const useAudioRecorder = ({
       // Save chunk to local session first
       if (audioData && localSessionIdRef.current && !retry) {
         try {
+          console.log(`[DB] Saving chunk ${sequence} to IndexedDB session ${localSessionIdRef.current}`);
           await appendAudioToSession(localSessionIdRef.current, audioData, sequence);
-          console.log(`[SUCCESS] Successfully saved audio chunk ${sequence} to local session`);
+          console.log(`[DB] ✓ Successfully saved audio chunk ${sequence} to IndexedDB (${audioData.length} samples)`);
         } catch (error) {
-          console.error(`[ERROR] Failed to save audio to local session:`, error);
+          console.error(`[DB] ✗ Failed to save audio chunk ${sequence} to IndexedDB:`, error);
         }
+      } else {
+        console.log(`[DB] Skipping IndexedDB save: audioData=${!!audioData}, sessionId=${localSessionIdRef.current}, retry=${retry}`);
       }
 
       // Wrap the server call in p-retry
@@ -1117,17 +1120,21 @@ const useAudioRecorder = ({
           totalRecordingTime,
           lastAudioTime,
         } = event.data;
-        const sequence = sequenceCounterRef.current++;
 
+        // Handle chunk messages (increment sequence only for actual chunks)
         if (command === "finalChunk" && audioBuffer) {
+          const sequence = sequenceCounterRef.current++;
           const audioArray = new Float32Array(audioBuffer);
-          console.log(`Received final chunk: ${audioArray.length} samples`);
+          console.log(`[RECEIVE] Final chunk: ${audioArray.length} samples, sequence: ${sequence}`);
           enqueueChunk(audioArray, true, sequence);
-        } else if (command === "uploadChunk" && audioBuffer) {
+        } else if (command === "chunk" && audioBuffer) {
+          const sequence = sequenceCounterRef.current++;
           const audioArray = new Float32Array(audioBuffer);
+          console.log(`[RECEIVE] Chunk: ${audioArray.length} samples, sequence: ${sequence}`);
           enqueueChunk(audioArray, false, sequence);
         } else if (command === "pauseChunk" && audioBuffer) {
-          console.log("Received pauseChunk with audioBuffer", audioBuffer);
+          const sequence = sequenceCounterRef.current++;
+          console.log(`[RECEIVE] Pause chunk with audioBuffer, sequence: ${sequence}`);
           enqueueChunk(new Float32Array(audioBuffer), false, sequence, true);
         } else if (command === "audioLevel") {
           setAudioLevel(level);
@@ -1320,9 +1327,11 @@ const useAudioRecorder = ({
     if (isProcessingQueueRef.current || chunkQueueRef.current.length === 0) return;
 
     const { chunk, isFinal, sequence, isPaused = false } = chunkQueueRef.current.shift()!;
+    console.log(`[QUEUE] Processing chunk ${sequence} from queue, remaining: ${chunkQueueRef.current.length}`);
     isProcessingQueueRef.current = true;
 
     uploadChunkToServer(chunk, isFinal, sequence, false, isPaused).finally(() => {
+      console.log(`[QUEUE] Finished processing chunk ${sequence}`);
       isProcessingQueueRef.current = false;
       processNextChunkInQueue();
     });
@@ -1335,8 +1344,9 @@ const useAudioRecorder = ({
       sequence: number,
       isPausedChunk = false
     ) => {
+      console.log(`[QUEUE] Enqueuing ${isFinalChunk ? 'FINAL' : isPausedChunk ? 'PAUSED' : 'regular'} chunk ${sequence}, samples: ${audioData?.length || 0}, queue size: ${chunkQueueRef.current.length}`);
+
       if (isFinalChunk) {
-        console.log("Enqueuing final chunk:", sequence);
         setIsProcessing(true);
       }
 
