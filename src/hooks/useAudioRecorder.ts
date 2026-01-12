@@ -84,7 +84,6 @@ const createAudioProcessorWorker = () => {
         this._recordingStartTime = Date.now();
         this._initialSilenceThreshold = 44100 * 10;
         this._isInitialPhase = true;
-        this._audioActivityBuffer = []; // Track recent audio activity
         this._bufferSize = 0; // Track total samples in buffer
 
         this.port.onmessage = (event) => {
@@ -179,12 +178,6 @@ const createAudioProcessorWorker = () => {
             this._isInitialPhase = false;
             this._silentSampleCount = 0;
             this._lastAudioTime = Date.now();
-            
-            // Track audio activity for chunk validation
-            this._audioActivityBuffer.push(audioLevel);
-            if (this._audioActivityBuffer.length > 1000) {
-              this._audioActivityBuffer.shift(); // Keep only recent activity
-            }
           } else {
             this._silentSampleCount += samples.length;
             
@@ -209,43 +202,36 @@ const createAudioProcessorWorker = () => {
 
           if (this._uploadChunk && !this._uploadingChunk) {
             this._uploadingChunk = true;
-            
-            // Check if buffer has meaningful audio content before uploading
-            const recentActivity = this._audioActivityBuffer.slice(-100); // Last 100 activity measurements
-            const hasRecentAudio = recentActivity.some(level => level > this._audioThreshold * 2);
-            
+
             // Properly flatten the buffer by concatenating Float32Arrays
             let totalLength = 0;
             for (let i = 0; i < this._buffer.length; i++) {
               totalLength += this._buffer[i].length;
             }
-            
+
             const flat = new Float32Array(totalLength);
             let offset = 0;
             for (let i = 0; i < this._buffer.length; i++) {
               flat.set(this._buffer[i], offset);
               offset += this._buffer[i].length;
             }
-            
-            // Only upload if we have recent audio activity or if this is a significant buffer
-            if (hasRecentAudio || this._bufferSize > 44100 * 30) { // 30 seconds minimum
+
+            // Always send chunks to server - let server handle silence filtering
+            if (this._bufferSize > 0) {
               this.port.postMessage(
                 {
                   command: "chunk",
                   audioBuffer: flat.buffer,
-                  hasActivity: hasRecentAudio,
                   bufferDuration: this._bufferSize / 44100
                 },
                 [flat.buffer]
               );
-              // Clear buffer after successful upload
+              console.log('[UPLOAD] Sending chunk: ' + (this._bufferSize / 44100).toFixed(1) + 's');
+              // Clear buffer after upload
               this._buffer = [];
               this._bufferSize = 0;
-            } else {
-              console.log('[SKIP] Skipping silent chunk upload (' + (this._bufferSize / 44100).toFixed(1) + 's, no recent activity)');
-              // Don't clear buffer for skipped chunks, keep accumulating
             }
-            
+
             this._uploadChunk = false;
             this._uploadingChunk = false;
           }
@@ -641,8 +627,7 @@ const useAudioRecorder = ({
               `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / 44100).toFixed(2)}s)`
             );
 
-            // Check if audio data has any meaningful content
-            let hasAudio = false;
+            // Log audio content for debugging (no longer skipping chunks)
             let maxAmplitude = 0;
             let nonZeroSamples = 0;
 
@@ -650,36 +635,14 @@ const useAudioRecorder = ({
               const amplitude = Math.abs(audioData[i]);
               if (amplitude > maxAmplitude) maxAmplitude = amplitude;
               if (amplitude > 0.001) {
-                hasAudio = true;
                 nonZeroSamples++;
               }
             }
 
             const audioPercentage = nonZeroSamples / audioData.length;
             console.log(
-              `[AUDIO] Audio validation: hasAudio=${hasAudio}, maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%`
+              `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
             );
-
-            // Skip completely silent chunks to avoid empty transcriptions
-            if (!hasAudio || maxAmplitude < 0.001 || audioPercentage < 0.01) {
-              console.log(
-                `[SKIP] Skipping silent chunk (${audioPercentage < 0.01 ? "too little audio content" : "completely silent"})`
-              );
-
-              // For final chunks, we still need to send something to close the session
-              if (!isFinalChunk) {
-                console.log(`[OUT] Non-final silent chunk skipped entirely`);
-                return; // Skip this chunk entirely
-              } else {
-                console.log(`[OUT] Final silent chunk - will send minimal audio to close session`);
-                // For final chunks, create minimal audio to ensure session closure
-                const minimalAudio = new Float32Array(1000); // 0.023 seconds of silence
-                for (let i = 0; i < minimalAudio.length; i += 100) {
-                  minimalAudio[i] = 0.001; // Add tiny audio blips
-                }
-                audioData = minimalAudio;
-              }
-            }
 
             const sampleRate = audioContextRef.current?.sampleRate || 16000;
             const timestamp = Date.now();
@@ -726,14 +689,10 @@ const useAudioRecorder = ({
               `[OUT] Final file for transcription: ${wavFile.size} bytes, ${wavFile.name}`
             );
 
-            // Final validation: check if file is too small to contain meaningful audio
+            // Log warning for very small files but don't skip them - let server decide
             if (wavFile.size < 500) {
-              // Less than 500 bytes is likely just WAV header
-              console.error(
-                `[ERROR] File too small (${wavFile.size} bytes) - likely contains no audio data`
-              );
-              throw new Error(
-                `Audio file too small (${wavFile.size} bytes) - no meaningful audio content`
+              console.warn(
+                `[WARN] Small audio file (${wavFile.size} bytes) - may contain minimal audio data, sending to server anyway`
               );
             }
 
