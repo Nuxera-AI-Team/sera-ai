@@ -145,26 +145,6 @@ const AudioDictation: React.FC<AudioDictationProps> = ({
     }
   };
 
-  // Keyboard support (spacebar)
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !e.repeat && !isProcessing) {
-        e.preventDefault();
-        if (isDictating) {
-          stopDictating();
-        } else {
-          startDictating();
-        }
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isDictating, isProcessing, startDictating, stopDictating]);
-
   const getButtonContent = () => {
     if (isProcessing) {
       return (
