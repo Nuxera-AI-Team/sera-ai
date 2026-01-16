@@ -8,6 +8,7 @@ interface AudioSession {
     patientName?: string;
     patientHistory?: string;
     speciality: string;
+    sampleRate: number; // Store original sample rate for correct WAV conversion on retry
     timestamp: number;
     totalChunks: number;
     completedChunks: number;
@@ -26,6 +27,7 @@ interface AudioRecoveryHookReturn {
       patientName?: string;
       patientHistory?: string;
       speciality: string;
+      sampleRate: number;
     }
   ) => Promise<void>;
   appendAudioToSession: (
@@ -277,7 +279,9 @@ const useAudioRecovery = (
       metadata: {
         patientId?: number;
         patientName?: string;
+        patientHistory?: string;
         speciality: string;
+        sampleRate: number;
       }
     ): Promise<void> => {
       try {
@@ -287,7 +291,7 @@ const useAudioRecovery = (
 
         const session: AudioSession = {
           id: sessionId,
-          audioChunks: [],
+          audioChunks: {},
           metadata: {
             ...metadata,
             timestamp: Date.now(),
