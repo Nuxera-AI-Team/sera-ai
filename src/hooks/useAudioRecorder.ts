@@ -1036,11 +1036,22 @@ const useAudioRecorder = ({
         if (success) {
           console.log(`Successfully retried session ${failedSession.id}`);
           setError(null);
+          setShowRetrySessionPrompt(false);
+        } else {
+          // Retry failed - keep showing retry UI so user can try again
+          console.log(`Retry failed for session ${failedSession.id} - keeping retry UI visible`);
+          setShowRetrySessionPrompt(true);
+          setError("Retry failed. Please check your connection and try again.");
         }
+      } else {
+        // No failed session found - hide retry UI
+        setShowRetrySessionPrompt(false);
       }
     } catch (error) {
       console.error("Error retrying failed sessions:", error);
       setError("Failed to retry sessions. Please try again.");
+      // Keep retry UI visible on error so user can try again
+      setShowRetrySessionPrompt(true);
     } finally {
       setIsRetryingSession(false);
     }
