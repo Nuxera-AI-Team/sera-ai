@@ -994,6 +994,11 @@ const useAudioRecorder = ({
             "Transcription failed after multiple attempts. Audio saved offline - you can retry transcription."
           );
         }
+
+        // Re-throw error when this is a retry attempt so the caller knows it failed
+        if (retry) {
+          throw err;
+        }
       } finally {
         if (isFinalChunk) setIsProcessing(false);
       }
@@ -1028,8 +1033,12 @@ const useAudioRecorder = ({
   // Update the retry function to work with sessions
   const retryFailedSession = React.useCallback(async () => {
     setIsRetryingSession(true);
+    let retrySucceeded = false;
+    let failedSessionId: string | null = null;
+
     try {
       const failedSession = await getFailedSession();
+      failedSessionId = failedSession?.id || null;
 
       if (failedSession) {
         const success = await retrySession(failedSession.id);
@@ -1039,24 +1048,29 @@ const useAudioRecorder = ({
           await deleteSession(failedSession.id);
           console.log(`Deleted session ${failedSession.id} from IndexedDB after successful retry`);
           setError(null);
-          setShowRetrySessionPrompt(false);
+          retrySucceeded = true;
         } else {
-          // Retry failed - keep showing retry UI so user can try again
-          console.log(`Retry failed for session ${failedSession.id} - keeping retry UI visible`);
-          setShowRetrySessionPrompt(true);
+          // Retry failed - will show retry UI in finally block
+          console.log(`Retry failed for session ${failedSession.id} - will show retry UI`);
           setError("Retry failed. Please check your connection and try again.");
         }
-      } else {
-        // No failed session found - hide retry UI
-        setShowRetrySessionPrompt(false);
       }
     } catch (error) {
       console.error("Error retrying failed sessions:", error);
       setError("Failed to retry sessions. Please try again.");
-      // Keep retry UI visible on error so user can try again
-      setShowRetrySessionPrompt(true);
     } finally {
       setIsRetryingSession(false);
+      // Set retry prompt visibility AFTER isRetryingSession is set to false
+      // This ensures the UI updates correctly
+      if (retrySucceeded) {
+        setShowRetrySessionPrompt(false);
+      } else if (failedSessionId) {
+        // Only show retry UI if there was a failed session to retry
+        setShowRetrySessionPrompt(true);
+      } else {
+        // No failed session found
+        setShowRetrySessionPrompt(false);
+      }
     }
   }, [retrySession, getFailedSession, deleteSession]);
 
