@@ -1035,6 +1035,9 @@ const useAudioRecorder = ({
         const success = await retrySession(failedSession.id);
         if (success) {
           console.log(`Successfully retried session ${failedSession.id}`);
+          // Delete the session from IndexedDB after successful retry
+          await deleteSession(failedSession.id);
+          console.log(`Deleted session ${failedSession.id} from IndexedDB after successful retry`);
           setError(null);
           setShowRetrySessionPrompt(false);
         } else {
@@ -1055,7 +1058,7 @@ const useAudioRecorder = ({
     } finally {
       setIsRetryingSession(false);
     }
-  }, [retrySession, getFailedSession]);
+  }, [retrySession, getFailedSession, deleteSession]);
 
   const startRecording = React.useCallback(async () => {
     try {
