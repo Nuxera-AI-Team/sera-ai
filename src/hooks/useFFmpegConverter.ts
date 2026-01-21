@@ -52,14 +52,14 @@ const createFFmpegWorker = () => {
       
       processAudioData: function(audioBuffer, options = {}) {
         try {
-          const { quality = 1, bitRate = 128000 } = options;
+          const { quality = 1, bitRate = 128000, sampleRate = 44100 } = options;
           const float32Array = new Float32Array(audioBuffer);
-          const wavBuffer = this.float32ToWavFile(float32Array);
-          
+          const wavBuffer = this.float32ToWavFile(float32Array, sampleRate);
+
           return {
             buffer: wavBuffer,
             size: wavBuffer.byteLength,
-            duration: float32Array.length / 44100
+            duration: float32Array.length / sampleRate
           };
         } catch (error) {
           throw new Error('Failed to process audio data: ' + error.message);
@@ -380,8 +380,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
           worker.postMessage({
             type: "convertWav",
             audioBuffer: audioData.buffer,
-            sampleRate,
-            options: { quality: 1, bitRate: 128000 },
+            options: { quality: 1, bitRate: 128000, sampleRate },
           });
         });
       } catch (err) {
