@@ -425,6 +425,7 @@ const useAudioRecorder = ({
     progress,
     statusMessage,
     convertToWav,
+    convertToFlac,
   } = useFFmpegConverter();
 
   // Add ref to track the current isLoaded value
@@ -709,14 +710,31 @@ const useAudioRecorder = ({
               console.log("[SILENCE] Silence removal disabled or not loaded");
             }
 
+            // Convert WAV to FLAC for upload
+            let audioFile: File = wavFile;
+            try {
+              console.log("[FLAC] Converting WAV to FLAC...");
+              const flacFile = await convertToFlac(wavFile);
+              if (flacFile && flacFile.type === "audio/flac") {
+                audioFile = flacFile;
+                console.log(
+                  `[FLAC] Conversion successful: ${wavFile.size} bytes WAV → ${flacFile.size} bytes FLAC`
+                );
+              } else {
+                console.warn("[FLAC] Conversion failed, using WAV file");
+              }
+            } catch (flacError) {
+              console.warn("[FLAC] Conversion error, using WAV file:", flacError);
+            }
+
             console.log(
-              `[OUT] Final file for transcription: ${wavFile.size} bytes, ${wavFile.name}`
+              `[OUT] Final file for transcription: ${audioFile.size} bytes, ${audioFile.name}`
             );
 
             // Log warning for very small files but don't skip them - let server decide
-            if (wavFile.size < 500) {
+            if (audioFile.size < 500) {
               console.warn(
-                `[WARN] Small audio file (${wavFile.size} bytes) - may contain minimal audio data, sending to server anyway`
+                `[WARN] Small audio file (${audioFile.size} bytes) - may contain minimal audio data, sending to server anyway`
               );
             }
 
@@ -742,14 +760,14 @@ const useAudioRecorder = ({
             // Create request body based on selected format
             switch (selectedFormatRef.current) {
               case "hl7":
-                formData = createHL7TranscriptionRequest(wavFile, requestData);
+                formData = createHL7TranscriptionRequest(audioFile, requestData);
                 contentType = "multipart/form-data; hl7-request=true";
                 console.log("Created HL7-formatted request");
                 console.log("HL7 FormData entries:", Array.from(formData.entries()));
                 break;
 
               case "fhir":
-                formData = createFHIRTranscriptionRequest(wavFile, requestData);
+                formData = createFHIRTranscriptionRequest(audioFile, requestData);
                 contentType = "multipart/form-data; fhir-request=true";
                 console.log("Created FHIR-formatted request");
                 console.log("FHIR FormData entries:", Array.from(formData.entries()));
@@ -766,7 +784,7 @@ const useAudioRecorder = ({
                   formData.append("sessionId", sessionIdRef.current);
                 }
 
-                formData.append("audio", wavFile);
+                formData.append("audio", audioFile);
                 formData.append("model", selectedModelRef.current);
                 formData.append("doctorName", doctorName);
                 formData.append("patientName", patientName || "");

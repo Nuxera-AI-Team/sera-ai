@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
+import { createFFmpeg, fetchFile, FFmpeg } from "@ffmpeg/ffmpeg";
 import { AUDIO_SAMPLE_RATE } from "../constants/audio";
 
 interface FFmpegConverterOptions {
@@ -267,8 +268,9 @@ const createFFmpegWorker = () => {
 
 // Legacy interface compatibility for existing code
 interface UseFFmpegConverterReturn {
-  ffmpeg: null;
+  ffmpeg: FFmpeg | null;
   isLoaded: boolean;
+  ffmpegLoaded: boolean;
   isConverting: boolean;
   progress: number;
   error: string | null;
@@ -279,22 +281,49 @@ interface UseFFmpegConverterReturn {
     sampleRate?: number,
     fileName?: string
   ) => Promise<File | null>;
+  convertToFlac: (wavFile: File) => Promise<File | null>;
   removeSilence: (file: File) => Promise<File | null>;
   reset: () => void;
 }
 
 const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   const [isLoaded, setIsLoaded] = useState(true); // Always loaded since we use embedded worker
+  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
+  const ffmpegRef = useRef<FFmpeg | null>(null);
 
   const loadFFmpeg = useCallback(async (): Promise<boolean> => {
-    // No loading needed for embedded worker
-    setIsLoaded(true);
-    return true;
-  }, []);
+    // Load FFmpeg WASM for FLAC conversion
+    if (ffmpegRef.current && ffmpegLoaded) {
+      return true;
+    }
+
+    try {
+      setStatusMessage("Loading FFmpeg...");
+      const ffmpeg = createFFmpeg({
+        log: false,
+        progress: ({ ratio }) => {
+          setProgress(Math.round(ratio * 100));
+        },
+      });
+
+      await ffmpeg.load();
+      ffmpegRef.current = ffmpeg;
+      setFfmpegLoaded(true);
+      setIsLoaded(true);
+      setStatusMessage("");
+      console.log("FFmpeg WASM loaded successfully");
+      return true;
+    } catch (err) {
+      console.error("Failed to load FFmpeg:", err);
+      setError("Failed to load FFmpeg");
+      setStatusMessage("");
+      return false;
+    }
+  }, [ffmpegLoaded]);
 
   const convertToWav = useCallback(
     async (
@@ -363,6 +392,85 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
       }
     },
     []
+  );
+
+  const convertToFlac = useCallback(
+    async (wavFile: File): Promise<File | null> => {
+      // Ensure FFmpeg is loaded
+      if (!ffmpegRef.current || !ffmpegLoaded) {
+        const loaded = await loadFFmpeg();
+        if (!loaded) {
+          console.error("Failed to load FFmpeg for FLAC conversion");
+          return wavFile; // Return original WAV if FFmpeg fails to load
+        }
+      }
+
+      const ffmpeg = ffmpegRef.current;
+      if (!ffmpeg) {
+        console.error("FFmpeg not available");
+        return wavFile;
+      }
+
+      try {
+        setIsConverting(true);
+        setProgress(0);
+        setError(null);
+        setStatusMessage("Converting to FLAC...");
+
+        const inputFileName = "input.wav";
+        const outputFileName = "output.flac";
+
+        // Write WAV file to FFmpeg's virtual filesystem
+        const wavData = await fetchFile(wavFile);
+        ffmpeg.FS("writeFile", inputFileName, wavData);
+
+        setProgress(30);
+        setStatusMessage("Encoding FLAC...");
+
+        // Convert WAV to FLAC with high quality settings
+        await ffmpeg.run(
+          "-i", inputFileName,
+          "-c:a", "flac",
+          "-compression_level", "5", // 0-12, higher = smaller file but slower
+          outputFileName
+        );
+
+        setProgress(80);
+        setStatusMessage("Finalizing...");
+
+        // Read the output FLAC file
+        const flacData = ffmpeg.FS("readFile", outputFileName);
+
+        // Clean up virtual filesystem
+        ffmpeg.FS("unlink", inputFileName);
+        ffmpeg.FS("unlink", outputFileName);
+
+        // Create File object from FLAC data
+        const flacBlob = new Blob([new Uint8Array(flacData)], { type: "audio/flac" });
+        const flacFileName = wavFile.name.replace(/\.wav$/i, ".flac");
+        const flacFile = new File([flacBlob], flacFileName, { type: "audio/flac" });
+
+        setProgress(100);
+        setStatusMessage("FLAC conversion complete");
+        console.log(`[FLAC] Converted ${wavFile.size} bytes WAV to ${flacFile.size} bytes FLAC (${Math.round((1 - flacFile.size / wavFile.size) * 100)}% reduction)`);
+
+        setTimeout(() => {
+          setIsConverting(false);
+          setProgress(0);
+          setStatusMessage("");
+        }, 500);
+
+        return flacFile;
+      } catch (err) {
+        console.error("FLAC conversion failed:", err);
+        setError("FLAC conversion failed");
+        setIsConverting(false);
+        setProgress(0);
+        setStatusMessage("");
+        return wavFile; // Return original WAV on failure
+      }
+    },
+    [ffmpegLoaded, loadFFmpeg]
   );
 
   const removeSilence = useCallback(async (file: File): Promise<File | null> => {
@@ -583,14 +691,16 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   }, []);
 
   return {
-    ffmpeg: null,
+    ffmpeg: ffmpegRef.current,
     isLoaded,
+    ffmpegLoaded,
     isConverting,
     progress,
     error,
     statusMessage,
     loadFFmpeg,
     convertToWav,
+    convertToFlac,
     removeSilence,
     reset,
   };
