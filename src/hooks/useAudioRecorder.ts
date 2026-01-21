@@ -327,7 +327,8 @@ const useAudioRecorder = ({
         isFirst: boolean,
         sequence: number,
         isFinal: boolean,
-        isPaused?: boolean
+        isPaused?: boolean,
+        sampleRateOverride?: number
       ) => Promise<void>)
     | null
   >(null);
@@ -381,7 +382,14 @@ const useAudioRecorder = ({
       console.log("🆔 Generated new retry session ID:", newSessionId);
 
       // Send as first AND final chunk to create complete new session
-      await uploadChunkToServerRef.current(combinedAudio, true, 0, true, false);
+      await uploadChunkToServerRef.current(
+        combinedAudio,
+        true,
+        0,
+        true,
+        false,
+        metadata.sampleRate
+      );
 
       console.log("[SUCCESS] Retry upload completed successfully");
     } catch (error) {
@@ -578,7 +586,8 @@ const useAudioRecorder = ({
       isFinalChunk: boolean,
       sequence: number,
       retry = false,
-      isPausedChunk = false
+      isPausedChunk = false,
+      sampleRateOverride?: number
     ) => {
       const currentIsLoaded = isLoadedRef.current;
 
@@ -658,7 +667,7 @@ const useAudioRecorder = ({
               `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
             );
 
-            const sampleRate = audioContextRef.current?.sampleRate || 16000;
+            const sampleRate = sampleRateOverride ?? (audioContextRef.current?.sampleRate || 16000);
             const timestamp = Date.now();
             const fileName = `audio-chunk-${timestamp}.wav`;
 
