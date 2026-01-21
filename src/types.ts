@@ -67,6 +67,11 @@ export interface AudioRecorderProps {
   className?: string;
 
   /**
+   * Additional CSS class names for the audio visualizer
+   */
+  visualizerClassName?: string;
+
+  /**
    * Custom styles
    */
   style?: React.CSSProperties;

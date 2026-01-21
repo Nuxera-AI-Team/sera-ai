@@ -6,6 +6,7 @@ interface AudioVisualizerImprovedProps {
   mediaStream: MediaStream | null;
   isRecording: boolean;
   forceLight?: boolean; // Add a prop to force light theme
+  className?: string; // Custom class for the visualizer container
 }
 
 // Color palette with complementary gradient stops for more sophisticated visuals
@@ -69,6 +70,7 @@ export default function AudioVisualizerImproved({
   mediaStream,
   isRecording,
   forceLight = true, // Default to light theme for login page
+  className,
 }: AudioVisualizerImprovedProps) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const animationFrameRef = React.useRef<number>(0);
@@ -274,8 +276,11 @@ export default function AudioVisualizerImproved({
       ctx.fillStyle = isDarkMode ? "#121826" : "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Create multiple overlapping background gradients - adapt for dark mode
+      // Create multiple overlapping background gradients - only for dark mode
       const createDynamicBackground = () => {
+        // Skip gradients in light mode - keep plain white background
+        if (!isDarkMode) return;
+
         // Main pulsating gradient
         const pulseIntensity =
           0.5 + (isRecording ? avgAudioLevel * 0.5 : Math.sin(timeRef.current * 0.2) * 0.2);
@@ -288,19 +293,11 @@ export default function AudioVisualizerImproved({
           canvas.width * 0.6 * pulseIntensity
         );
 
-        if (isDarkMode) {
-          // Dark mode gradient
-          mainGradient.addColorStop(0, "rgba(91, 33, 182, 0.4)"); // Dark purple at center
-          mainGradient.addColorStop(0.4, "rgba(67, 56, 202, 0.3)"); // Indigo midway
-          mainGradient.addColorStop(0.6, "rgba(30, 41, 59, 0.2)"); // Slate blue
-          mainGradient.addColorStop(1, "rgba(18, 24, 38, 0.0)"); // Transparent to let dark background show
-        } else {
-          // Light mode gradient
-          mainGradient.addColorStop(0, "rgba(228, 228, 255, 0.7)"); // Very light purple at center
-          mainGradient.addColorStop(0.4, "rgba(240, 240, 255, 0.5)");
-          mainGradient.addColorStop(0.6, "rgba(245, 245, 255, 0.3)"); // Almost white at edges
-          mainGradient.addColorStop(1, "rgba(255, 255, 255, 0.0)"); // Transparent to let white background show
-        }
+        // Dark mode gradient
+        mainGradient.addColorStop(0, "rgba(91, 33, 182, 0.4)"); // Dark purple at center
+        mainGradient.addColorStop(0.4, "rgba(67, 56, 202, 0.3)"); // Indigo midway
+        mainGradient.addColorStop(0.6, "rgba(30, 41, 59, 0.2)"); // Slate blue
+        mainGradient.addColorStop(1, "rgba(18, 24, 38, 0.0)"); // Transparent to let dark background show
 
         ctx.fillStyle = mainGradient;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -600,9 +597,9 @@ export default function AudioVisualizerImproved({
   }, [mediaStream, isRecording, isDarkMode]);
 
   return (
-    <div className="w-full flex justify-center items-center overflow-visible">
-      <div className="px-4 py-2 w-full h-full">
-        <div className="w-full h-full aspect-square max-w-md mx-auto relative">
+    <div className={`w-full flex justify-center items-center overflow-visible ${className || ""}`}>
+      <div className="p-4 w-full h-full">
+        <div className="w-full h-full mx-auto relative">
           {/* Outer background circle */}
           <div
             className={`absolute inset-0 rounded-full ${isDarkMode ? "bg-gray-900" : "bg-white"}`}

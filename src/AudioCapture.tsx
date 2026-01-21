@@ -117,8 +117,8 @@ const tailwindStyles = `
 // Inject styles only once
 let stylesInjected = false;
 const injectTailwindStyles = () => {
-  if (!stylesInjected && typeof document !== 'undefined') {
-    const styleElement = document.createElement('style');
+  if (!stylesInjected && typeof document !== "undefined") {
+    const styleElement = document.createElement("style");
     styleElement.textContent = tailwindStyles;
     document.head.appendChild(styleElement);
     stylesInjected = true;
@@ -167,6 +167,11 @@ export interface AudioCaptureProps {
   className?: string;
 
   /**
+   * Additional CSS class names for the audio visualizer
+   */
+  visualizerClassName?: string;
+
+  /**
    * Custom styles
    */
   style?: React.CSSProperties;
@@ -181,6 +186,7 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
   format = "raw",
   showDownload = false,
   className = "",
+  visualizerClassName = "",
   style,
 }) => {
   // Inject Tailwind styles on component mount
@@ -257,7 +263,7 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
   const handleDownload = () => {
     if (lastAudioFile) {
       const url = URL.createObjectURL(lastAudioFile);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
       a.download = lastAudioFile.name;
       document.body.appendChild(a);
@@ -268,7 +274,7 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
       setToast({
         show: true,
         message: `Downloaded ${lastAudioFile.name}`,
-        type: "success"
+        type: "success",
       });
     }
   };
@@ -287,7 +293,7 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
   const formatDuration = (seconds: number): string => {
     const minutes = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
-    return `${minutes}:${secs.toString().padStart(2, '0')}`;
+    return `${minutes}:${secs.toString().padStart(2, "0")}`;
   };
 
   // Enhanced error detection to include no audio detection
@@ -402,7 +408,9 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
           <Loader2 className="animate-spin h-5 w-5 text-blue-600" />
           <div className="text-center">
             <span className="block text-sm font-medium text-blue-700 dark:text-blue-300">
-              {isConverting ? `Processing Audio... ${Math.round(progress)}%` : "Processing audio chunk..."}
+              {isConverting
+                ? `Processing Audio... ${Math.round(progress)}%`
+                : "Processing audio chunk..."}
             </span>
             {statusMessage && (
               <span className="block text-xs text-blue-600 dark:text-blue-400 mt-1">
@@ -415,22 +423,13 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
 
       {/* Audio Visualizer */}
       {isRecording && !isPaused && mediaStreamRef.current && (
-        <div
-          className={`audio-recorder-container ${isRecording && !isPaused ? "glow-active" : ""}`}
-        >
-          <div className="edge-container">
-            <div className="edge edge-top" />
-            <div className="edge edge-right" />
-            <div className="edge edge-bottom" />
-            <div className="edge edge-left" />
-          </div>
-          <div className="flex justify-center items-center">
-            <AudioVisualizerImproved
-              mediaStream={mediaStreamRef.current}
-              isRecording={isRecording && !isPaused}
-              forceLight={false}
-            />
-          </div>
+        <div className={`w-full ${visualizerClassName || "max-w-lg"} mx-auto`}>
+          <AudioVisualizerImproved
+            mediaStream={mediaStreamRef.current}
+            isRecording={isRecording && !isPaused}
+            forceLight={false}
+            className={visualizerClassName}
+          />
         </div>
       )}
 

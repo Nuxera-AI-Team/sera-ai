@@ -128,6 +128,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   onSuccess,
   onError,
   className = "",
+  visualizerClassName = "",
   style,
 }) => {
   // Inject Tailwind styles on component mount
@@ -396,22 +397,13 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
         </div>
       )}
       {isRecording && !isPaused && mediaStreamRef.current && (
-        <div
-          className={`audio-recorder-container ${isRecording && !isPaused ? "glow-active" : ""}`}
-        >
-          <div className="edge-container">
-            <div className="edge edge-top" />
-            <div className="edge edge-right" />
-            <div className="edge edge-bottom" />
-            <div className="edge edge-left" />
-          </div>
-          <div className="flex justify-center items-center">
-            <AudioVisualizerImproved
-              mediaStream={mediaStreamRef.current}
-              isRecording={isRecording && !isPaused} // Keep running even during FFmpeg processing!
-              forceLight={false}
-            />
-          </div>
+        <div className={`w-full ${visualizerClassName || "max-w-lg"} mx-auto`}>
+          <AudioVisualizerImproved
+            mediaStream={mediaStreamRef.current}
+            isRecording={isRecording && !isPaused}
+            forceLight={false}
+            className={visualizerClassName}
+          />
         </div>
       )}
       <div className="flex justify-center">
