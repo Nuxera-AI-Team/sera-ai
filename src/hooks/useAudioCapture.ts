@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, MutableRefObject } from "react";
 import useFFmpegConverter from "./useFFmpegConverter";
+import { AUDIO_SAMPLE_RATE } from "../constants/audio";
 
 interface AudioCaptureHookProps {
   onAudioChunk?: (audioData: Float32Array, sequence: number, isFinal: boolean) => void;
@@ -405,7 +406,7 @@ const useAudioCapture = ({
 
   // Manual WAV file creation
   const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = audioContextRef.current?.sampleRate || 44100;
+    const sampleRate = audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE;
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
 

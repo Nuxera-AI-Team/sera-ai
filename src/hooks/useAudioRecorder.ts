@@ -4,6 +4,7 @@ import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
 import { ClassificationInfoResponse } from "../types";
+import { AUDIO_SAMPLE_RATE } from "../constants/audio";
 
 interface AudioRecorderHookProps {
   apiKey: string;
@@ -667,7 +668,7 @@ const useAudioRecorder = ({
               `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
             );
 
-            const sampleRate = sampleRateOverride ?? (audioContextRef.current?.sampleRate || 16000);
+            const sampleRate = sampleRateOverride ?? (audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE);
             const timestamp = Date.now();
             const fileName = `audio-chunk-${timestamp}.wav`;
 
@@ -1446,7 +1447,7 @@ const useAudioRecorder = ({
   );
 
   const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = audioContextRef.current?.sampleRate || 44100;
+    const sampleRate = audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE;
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
 

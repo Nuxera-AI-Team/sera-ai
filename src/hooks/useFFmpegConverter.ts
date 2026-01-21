@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { AUDIO_SAMPLE_RATE } from "../constants/audio";
 
 interface FFmpegConverterOptions {
   quality?: number;
@@ -298,7 +299,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   const convertToWav = useCallback(
     async (
       audioData: Float32Array,
-      sampleRate: number = 44100,
+      sampleRate: number = AUDIO_SAMPLE_RATE,
       fileName: string = "recording.wav"
     ): Promise<File | null> => {
       setIsConverting(true);
@@ -445,8 +446,10 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
         console.error('No audio data chunk found in WAV file');
         return file; // Return original file
       }
-      
-      console.log(`[AUDIO] Found audio data: start=${audioDataStart}, length=${audioDataLength} bytes`);
+
+      // Extract sample rate from WAV header (byte offset 24)
+      const originalSampleRate = dataView.getUint32(24, true);
+      console.log(`[AUDIO] Found audio data: start=${audioDataStart}, length=${audioDataLength} bytes, sampleRate=${originalSampleRate}Hz`);
       
       // Extract audio data (assuming 16-bit PCM)
       const audioData = new Int16Array(arrayBuffer, audioDataStart, audioDataLength / 2);
@@ -548,13 +551,14 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
         };
 
         // Start processing with original command structure
+        // Use the original sample rate from the WAV file to preserve audio speed
         worker.postMessage({
           type: "removeSilence",
           audioBuffer: float32Data.buffer,
           options: {
             silenceThreshold: 0.01, // Amplitude threshold for silence
             minSilenceDuration: 0.5, // Minimum silence duration to remove (seconds)
-            sampleRate: 44100, // Assume standard sample rate
+            sampleRate: originalSampleRate, // Preserve original sample rate to avoid speed changes
             fileName: file.name,
             fileType: file.type,
             originalSize: file.size,
