@@ -4,6 +4,7 @@ import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
 import { ClassificationInfoResponse } from "../types";
+import { combineAudioChunks, float32ToWavFile } from "../utils/audioUtils";
 
 interface AudioRecorderHookProps {
   apiKey: string;
@@ -305,20 +306,6 @@ const useAudioRecorder = ({
     createHL7TranscriptionRequest,
     createFHIRTranscriptionRequest,
   } = useHL7FHIRConverter();
-
-  // Add helper function to combine audio chunks (moved before useAudioRecovery)
-  const combineAudioChunks = React.useCallback((audioChunks: Float32Array[]): Float32Array => {
-    const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const combinedAudio = new Float32Array(totalLength);
-    let offset = 0;
-
-    for (const chunk of audioChunks) {
-      combinedAudio.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return combinedAudio;
-  }, []);
 
   // Create a ref for uploadChunkToServer to avoid closure issues
   const uploadChunkToServerRef = React.useRef<
@@ -1435,48 +1422,6 @@ const useAudioRecorder = ({
     },
     [processNextChunkInQueue, isLoaded]
   );
-
-  const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = audioContextRef.current?.sampleRate || 44100;
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-
-    const writeString = (offset: number, str: string) => {
-      for (let i = 0; i < str.length; i++) {
-        view.setUint8(offset + i, str.charCodeAt(i));
-      }
-    };
-
-    writeString(0, "RIFF");
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeString(8, "WAVE");
-    writeString(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, "data");
-    view.setUint32(40, samples.length * 2, true);
-
-    let offset = 44;
-    for (let i = 0; i < samples.length; i++) {
-      const sample = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
-    }
-
-    // Create File instead of Blob
-    const timestamp = Date.now();
-    const filename = `audio-chunk-${timestamp}.wav`;
-
-    return new File([view], filename, {
-      type: "audio/wav",
-      lastModified: timestamp,
-    });
-  };
 
   // Add a test function to verify audio capture
   const testAudioCapture = useCallback(async () => {
