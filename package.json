@@ -1,6 +1,6 @@
 {
   "name": "sera-ai",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "React component for real-time audio recording with AI transcription - works out of the box with embedded workers",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -87,6 +87,8 @@
   },
   "homepage": "https://github.com/Nuxera-AI-Team/sera-ai#readme",
   "dependencies": {
+    "@ffmpeg/core": "^0.11.0",
+    "@ffmpeg/ffmpeg": "^0.11.0",
     "p-retry": "^7.1.1"
   },
   "sideEffects": false
