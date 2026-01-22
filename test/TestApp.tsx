@@ -66,157 +66,188 @@ const AudioTestPanel = () => {
   );
 };
 
+const formatMedicalNote = (classifiedInfo?: Record<string, string[]>): string => {
+  if (!classifiedInfo || Object.keys(classifiedInfo).length === 0) {
+    return "";
+  }
+
+  return Object.entries(classifiedInfo)
+    .map(([section, items]) => {
+      const safeItems = Array.isArray(items) ? items : [];
+      const formattedItems = safeItems.map((item) => `- ${item}`).join("\n");
+      return `${section}:\n${formattedItems}`;
+    })
+    .join("\n\n");
+};
+
 const TestApp = () => {
-  const [currentView, setCurrentView] = useState<"simple" | "advanced">("simple");
+  const [transcriptionResult, setTranscriptionResult] = useState<string>("");
+  const [medicalNoteResult, setMedicalNoteResult] = useState<string>("");
+  const [dictationResult, setDictationResult] = useState<string>("");
+  const [errorResult, setErrorResult] = useState<string>("");
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f5f5f5" }}>
-      {/* Navigation */}
-      <nav
-        style={{
-          backgroundColor: "#fff",
-          padding: "16px 20px",
-          borderBottom: "1px solid #e0e0e0",
-          marginBottom: "0",
-        }}
-      >
-        <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
-          <h2 style={{ margin: 0, color: "#333" }}>Sera AI Test Examples</h2>
-          <button
-            onClick={() => setCurrentView("simple")}
-            style={{
-              padding: "8px 16px",
-              backgroundColor: currentView === "simple" ? "#007bff" : "#fff",
-              color: currentView === "simple" ? "#fff" : "#007bff",
-              border: "1px solid #007bff",
-              borderRadius: "4px",
-              cursor: "pointer",
+      <div style={{ padding: "40px", maxWidth: "600px", margin: "0 auto" }}>
+        <h1 style={{ color: "#333", marginBottom: "20px" }}>Sera AI Test Example</h1>
+
+        <AudioTestPanel />
+
+        <p style={{ color: "#666", marginBottom: "30px", lineHeight: "1.6" }}>
+          This example shows how to use the component with a custom API endpoint and handle
+          transcription results.
+        </p>
+
+        <div
+          style={{
+            border: "1px solid #e0e0e0",
+            borderRadius: "8px",
+            padding: "20px",
+            marginBottom: "20px",
+            backgroundColor: "#ffffff",
+          }}
+        >
+          <h3 style={{ margin: "0 0 16px 0", color: "#2f3a4f" }}>Transcription</h3>
+          <AudioRecorder
+            apiBaseUrl="http://localhost:3000"
+            apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
+            speciality="general_practice"
+            onTranscriptionComplete={(text, classification) => {
+              console.log("Custom API transcription:", text);
+              setTranscriptionResult(text);
+              setMedicalNoteResult(formatMedicalNote(classification?.classifiedInfo));
+              setErrorResult("");
             }}
-          >
-            Simple Example
-          </button>
-          <button
-            onClick={() => setCurrentView("advanced")}
-            style={{
-              padding: "8px 16px",
-              backgroundColor: currentView === "advanced" ? "#007bff" : "#fff",
-              color: currentView === "advanced" ? "#fff" : "#007bff",
-              border: "1px solid #007bff",
-              borderRadius: "4px",
-              cursor: "pointer",
+            onError={(error) => {
+              console.error("Custom API error:", error);
+              setErrorResult(error);
             }}
-          >
-            Advanced Example
-          </button>
+          />
         </div>
-      </nav>
 
-      {/* Content */}
-      {currentView === "simple" ? (
-        <div />
-      ) : (
-        <div style={{ padding: "40px", maxWidth: "600px", margin: "0 auto" }}>
-          <h1 style={{ color: "#333", marginBottom: "20px" }}>Advanced Example with Custom API</h1>
+        <div
+          style={{
+            border: "1px solid #e0e0e0",
+            borderRadius: "8px",
+            padding: "20px",
+            marginBottom: "30px",
+            backgroundColor: "#ffffff",
+          }}
+        >
+          <h3 style={{ margin: "0 0 16px 0", color: "#2f3a4f" }}>Dictation</h3>
+          <AudioDictation
+            apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
+            apiBaseUrl="http://localhost:3000"
+            doctorName="Dr. Smith"
+            onDictationStart={() => {
+              console.log("--- Dictation started");
+            }}
+            onProcessingStart={() => {
+              console.log(" --- Processing started");
+            }}
+            onDictationComplete={(text) => {
+              console.log("Dictated:", text);
+              setDictationResult(text);
+            }}
+          />
+        </div>
 
-          <AudioTestPanel />
-
-          <p style={{ color: "#666", marginBottom: "30px", lineHeight: "1.6" }}>
-            This example shows how to use the component with a custom API endpoint and handle
-            transcription results.
+        <div
+          style={{
+            backgroundColor: "#f8f9fa",
+            padding: "16px",
+            borderRadius: "8px",
+            marginBottom: "16px",
+          }}
+        >
+          <h4 style={{ margin: "0 0 8px 0", color: "#333" }}>Transcription Result:</h4>
+          <p
+            style={{
+              margin: 0,
+              fontFamily: "monospace",
+              backgroundColor: "#fff",
+              padding: "8px",
+              borderRadius: "4px",
+              border: "1px solid #ddd",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {transcriptionResult || "(Transcriptions will appear here)"}
           </p>
-
-          <div
-            style={{
-              border: "1px solid #e0e0e0",
-              borderRadius: "8px",
-              padding: "20px",
-              marginBottom: "30px",
-            }}
-          >
-            <AudioRecorder
-              apiBaseUrl="http://localhost:3000"
-              apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
-              speciality="general_practice"
-              onTranscriptionComplete={(text) => {
-                console.log("Custom API transcription:", text);
-                const resultElement = document.getElementById("transcription-result");
-                if (resultElement) {
-                  resultElement.innerText = "Latest transcription: " + text;
-                }
-              }}
-              onError={(error) => {
-                console.error("Custom API error:", error);
-                const errorElement = document.getElementById("error-result");
-                if (errorElement) {
-                  errorElement.innerText = "Error: " + error;
-                }
-              }}
-            />
-
-            <AudioDictation
-              apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
-              apiBaseUrl="http://localhost:3000"
-              doctorName="Dr. Smith"
-              onDictationStart={() => {
-                console.log("--- Dictation started");
-              }}
-              onProcessingStart={() => {
-                console.log(" --- Processing started");
-              }}
-              onDictationComplete={(text) => {
-                console.log("Dictated:", text);
-              }}
-            />
-          </div>
-
-          <div
-            style={{
-              backgroundColor: "#f8f9fa",
-              padding: "16px",
-              borderRadius: "8px",
-              marginBottom: "16px",
-            }}
-          >
-            <h4 style={{ margin: "0 0 8px 0", color: "#333" }}>Transcription Result:</h4>
-            <p
-              id="transcription-result"
-              style={{
-                margin: 0,
-                fontFamily: "monospace",
-                backgroundColor: "#fff",
-                padding: "8px",
-                borderRadius: "4px",
-                border: "1px solid #ddd",
-              }}
-            >
-              (Transcriptions will appear here)
-            </p>
-          </div>
-
-          <div
-            style={{
-              backgroundColor: "#fff3cd",
-              padding: "16px",
-              borderRadius: "8px",
-            }}
-          >
-            <h4 style={{ margin: "0 0 8px 0", color: "#856404" }}>Error Messages:</h4>
-            <p
-              id="error-result"
-              style={{
-                margin: 0,
-                fontFamily: "monospace",
-                backgroundColor: "#fff",
-                padding: "8px",
-                borderRadius: "4px",
-                border: "1px solid #ddd",
-              }}
-            >
-              (Errors will appear here)
-            </p>
-          </div>
         </div>
-      )}
+
+        <div
+          style={{
+            backgroundColor: "#f3f1ff",
+            padding: "16px",
+            borderRadius: "8px",
+            marginBottom: "16px",
+          }}
+        >
+          <h4 style={{ margin: "0 0 8px 0", color: "#3f2a71" }}>Dictation Result:</h4>
+          <p
+            style={{
+              margin: 0,
+              fontFamily: "monospace",
+              backgroundColor: "#fff",
+              padding: "8px",
+              borderRadius: "4px",
+              border: "1px solid #ddd",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {dictationResult || "(Dictation will appear here)"}
+          </p>
+        </div>
+
+        <div
+          style={{
+            backgroundColor: "#eef7ff",
+            padding: "16px",
+            borderRadius: "8px",
+            marginBottom: "16px",
+          }}
+        >
+          <h4 style={{ margin: "0 0 8px 0", color: "#1b4a6b" }}>Medical Note:</h4>
+          <p
+            style={{
+              margin: 0,
+              fontFamily: "monospace",
+              backgroundColor: "#fff",
+              padding: "8px",
+              borderRadius: "4px",
+              border: "1px solid #ddd",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {medicalNoteResult || "(Medical note will appear here)"}
+          </p>
+        </div>
+
+        <div
+          style={{
+            backgroundColor: "#fff3cd",
+            padding: "16px",
+            borderRadius: "8px",
+            marginBottom: "16px",
+          }}
+        >
+          <h4 style={{ margin: "0 0 8px 0", color: "#856404" }}>Error Messages:</h4>
+          <p
+            style={{
+              margin: 0,
+              fontFamily: "monospace",
+              backgroundColor: "#fff",
+              padding: "8px",
+              borderRadius: "4px",
+              border: "1px solid #ddd",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {errorResult || "(Errors will appear here)"}
+          </p>
+        </div>
+      </div>
     </div>
   );
 };
