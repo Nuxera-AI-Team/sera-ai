@@ -230,6 +230,8 @@ const useAudioCapture = ({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  // Store sample rate separately so it's available even after audioContext is closed
+  const recordingSampleRateRef = useRef<number | null>(null);
   const chunkIntervalRef = useRef<number | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
   const durationIntervalRef = useRef<number | null>(null);
@@ -409,7 +411,7 @@ const useAudioCapture = ({
 
   // Manual WAV file creation
   const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE;
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
 
@@ -510,6 +512,8 @@ const useAudioCapture = ({
       source.connect(processor);
 
       audioContextRef.current = audioContext;
+      // Store sample rate for use even after audioContext is closed
+      recordingSampleRateRef.current = audioContext.sampleRate;
       processorRef.current = processor;
       setIsRecording(true);
 

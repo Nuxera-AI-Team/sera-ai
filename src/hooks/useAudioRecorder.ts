@@ -285,6 +285,8 @@ const useAudioRecorder = ({
   const mediaStreamRef = React.useRef<MediaStream | null>(null);
   const processorRef = React.useRef<AudioWorkletNode | null>(null);
   const audioContextRef = React.useRef<AudioContext | null>(null);
+  // Store sample rate separately so it's available even after audioContext is closed
+  const recordingSampleRateRef = React.useRef<number | null>(null);
   const sessionIdRef = React.useRef<string | null>(null); // This will be server session ID
   const localSessionIdRef = React.useRef<string | null>(null); // This will be our IndexedDB session ID
 
@@ -651,9 +653,12 @@ const useAudioRecorder = ({
 
             console.log();
 
-            const currentSampleRate = sampleRateOverride ?? (audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE);
+            const currentSampleRate = sampleRateOverride ?? recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+            if (!sampleRateOverride && !recordingSampleRateRef.current && !audioContextRef.current?.sampleRate) {
+              console.warn(`[WARN] Using fallback sample rate ${AUDIO_SAMPLE_RATE}Hz - no stored sample rate available`);
+            }
             console.log(
-              `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / currentSampleRate).toFixed(2)}s)`
+              `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / currentSampleRate).toFixed(2)}s) at ${currentSampleRate}Hz`
             );
 
             // Log audio content for debugging (no longer skipping chunks)
@@ -673,7 +678,11 @@ const useAudioRecorder = ({
               `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
             );
 
-            const sampleRate = sampleRateOverride ?? (audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE);
+            const sampleRate = sampleRateOverride ?? recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+            if (!sampleRateOverride && !recordingSampleRateRef.current && !audioContextRef.current?.sampleRate) {
+              console.warn(`[WARN] Using fallback sample rate ${AUDIO_SAMPLE_RATE}Hz for WAV conversion - no stored sample rate available`);
+            }
+            console.log(`[WAV] Converting to WAV with sample rate: ${sampleRate}Hz`);
             const timestamp = Date.now();
             const fileName = `audio-chunk-${timestamp}.wav`;
 
@@ -1258,6 +1267,9 @@ const useAudioRecorder = ({
       source.connect(processor);
 
       audioContextRef.current = audioContext;
+      // Store sample rate for use even after audioContext is closed
+      recordingSampleRateRef.current = audioContext.sampleRate;
+      console.log(`[AUDIO] Recording sample rate set to: ${audioContext.sampleRate}Hz`);
       processorRef.current = processor;
       setIsRecording(true);
 
@@ -1471,7 +1483,7 @@ const useAudioRecorder = ({
   );
 
   const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE;
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
 

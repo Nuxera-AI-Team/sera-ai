@@ -9,11 +9,15 @@ interface FFmpegConverterOptions {
 
 // Embedded FFmpeg Worker - no external files needed
 const createFFmpegWorker = () => {
+  // Inject the constant value into the worker code
+  const DEFAULT_SAMPLE_RATE = AUDIO_SAMPLE_RATE;
+
   const workerCode = `
     let ffmpegModule = null;
-    
+    const DEFAULT_SAMPLE_RATE = ${DEFAULT_SAMPLE_RATE};
+
     const helperFunctions = {
-      float32ToWavFile: function(left, sampleRate = 44100) {
+      float32ToWavFile: function(left, sampleRate = DEFAULT_SAMPLE_RATE) {
         const length = left.length;
         const buffer = new ArrayBuffer(44 + length * 2);
         const view = new DataView(buffer);
@@ -52,7 +56,7 @@ const createFFmpegWorker = () => {
       
       processAudioData: function(audioBuffer, options = {}) {
         try {
-          const { quality = 1, bitRate = 128000, sampleRate = 44100 } = options;
+          const { quality = 1, bitRate = 128000, sampleRate = DEFAULT_SAMPLE_RATE } = options;
           const float32Array = new Float32Array(audioBuffer);
           const wavBuffer = this.float32ToWavFile(float32Array, sampleRate);
 
@@ -71,7 +75,7 @@ const createFFmpegWorker = () => {
           const {
             silenceThreshold = 0.005,    // Low threshold to only detect true silence
             minSilenceDuration = 1.5,    // Only remove silences longer than 1.5 seconds
-            sampleRate = 44100
+            sampleRate = DEFAULT_SAMPLE_RATE
           } = options;
           
           const float32Array = new Float32Array(audioBuffer);
