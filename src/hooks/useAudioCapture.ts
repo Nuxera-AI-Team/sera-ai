@@ -44,23 +44,26 @@ interface UseAudioCaptureReturn {
 const createAudioCaptureWorker = () => {
   const workerCode = `
     class AudioCaptureProcessor extends AudioWorkletProcessor {
-      constructor() {
+      constructor(options) {
         super();
         this._buffer = [];
         this._isStopped = false;
         this._isPaused = false;
         this._chunkReady = false;
         this._processingChunk = false;
-        
+
+        // Get sample rate from processor options or use sampleRate from AudioWorkletGlobalScope
+        this._sampleRate = options?.processorOptions?.sampleRate || sampleRate;
+
         this._audioLevelCheckInterval = 0;
         this._audioLevelCheckFrequency = 128;
         this._silentSampleCount = 0;
-        this._maxSilentSamples = 44100 * 30;
+        this._maxSilentSamples = this._sampleRate * 30;
         this._audioThreshold = 0.002;
         this._hasDetectedAudio = false;
         this._lastAudioTime = 0;
         this._recordingStartTime = Date.now();
-        this._initialSilenceThreshold = 44100 * 10;
+        this._initialSilenceThreshold = this._sampleRate * 10;
         this._isInitialPhase = true;
         this._bufferSize = 0;
 
@@ -97,7 +100,7 @@ const createAudioCaptureWorker = () => {
           this.port.postMessage({
             command: "finalChunk",
             audioBuffer: flat.buffer,
-            duration: this._bufferSize / 44100
+            duration: this._bufferSize / this._sampleRate
           }, [flat.buffer]);
         } else {
           // Send empty final chunk
@@ -178,12 +181,12 @@ const createAudioCaptureWorker = () => {
           // Send chunk if ready
           if (this._chunkReady && !this._processingChunk) {
             this._processingChunk = true;
-            
+
             const flat = this._flattenBuffer();
             this.port.postMessage({
               command: "chunk",
               audioBuffer: flat.buffer,
-              duration: this._bufferSize / 44100,
+              duration: this._bufferSize / this._sampleRate,
               hasActivity: audioLevel > this._audioThreshold
             }, [flat.buffer]);
             
@@ -481,7 +484,9 @@ const useAudioCapture = ({
       await audioContext.audioWorklet.addModule(processorUrl);
       URL.revokeObjectURL(processorUrl);
 
-      const processor = new AudioWorkletNode(audioContext, "audio-capture-processor");
+      const processor = new AudioWorkletNode(audioContext, "audio-capture-processor", {
+        processorOptions: { sampleRate: audioContext.sampleRate }
+      });
 
       processor.port.onmessage = (event) => {
         if (event.data.command === "chunk") {

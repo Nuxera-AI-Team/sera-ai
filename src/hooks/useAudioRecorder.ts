@@ -66,24 +66,27 @@ const API_BASE_URL = "https://nuxera.cloud";
 const createAudioProcessorWorker = () => {
   const workerCode = `
     class AudioProcessor extends AudioWorkletProcessor {
-      constructor() {
+      constructor(options) {
         super();
         this._buffer = [];
         this._isStopped = false;
         this._isPaused = false;
         this._uploadChunk = false;
         this._uploadingChunk = false;
-        
+
+        // Get sample rate from processor options or use sampleRate from AudioWorkletGlobalScope
+        this._sampleRate = options?.processorOptions?.sampleRate || sampleRate;
+
         this._audioLevelCheckInterval = 0;
         this._audioLevelCheckFrequency = 128;
         this._silentSampleCount = 0;
-        this._maxSilentSamples = 44100 * 30;
+        this._maxSilentSamples = this._sampleRate * 30;
         this._audioThreshold = 0.002; // Increased from 0.001 to better detect speech
         this._hasDetectedAudio = false;
         this._totalSilentTime = 0;
         this._lastAudioTime = 0;
         this._recordingStartTime = Date.now();
-        this._initialSilenceThreshold = 44100 * 10;
+        this._initialSilenceThreshold = this._sampleRate * 10;
         this._isInitialPhase = true;
         this._bufferSize = 0; // Track total samples in buffer
 
@@ -225,11 +228,11 @@ const createAudioProcessorWorker = () => {
                 {
                   command: "chunk",
                   audioBuffer: flat.buffer,
-                  bufferDuration: this._bufferSize / 44100
+                  bufferDuration: this._bufferSize / this._sampleRate
                 },
                 [flat.buffer]
               );
-              console.log('[UPLOAD] Sending chunk: ' + (this._bufferSize / 44100).toFixed(1) + 's');
+              console.log('[UPLOAD] Sending chunk: ' + (this._bufferSize / this._sampleRate).toFixed(1) + 's');
               // Clear buffer after upload
               this._buffer = [];
               this._bufferSize = 0;
@@ -648,8 +651,9 @@ const useAudioRecorder = ({
 
             console.log();
 
+            const currentSampleRate = sampleRateOverride ?? (audioContextRef.current?.sampleRate || AUDIO_SAMPLE_RATE);
             console.log(
-              `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / 44100).toFixed(2)}s)`
+              `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / currentSampleRate).toFixed(2)}s)`
             );
 
             // Log audio content for debugging (no longer skipping chunks)
@@ -1187,7 +1191,9 @@ const useAudioRecorder = ({
       // Clean up the blob URL
       URL.revokeObjectURL(processorUrl);
 
-      const processor = new AudioWorkletNode(audioContext, "audio-processor");
+      const processor = new AudioWorkletNode(audioContext, "audio-processor", {
+        processorOptions: { sampleRate: audioContext.sampleRate }
+      });
 
       processor.port.onmessage = (event) => {
         const {
