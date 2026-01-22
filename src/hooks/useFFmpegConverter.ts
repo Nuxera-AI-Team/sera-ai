@@ -69,8 +69,8 @@ const createFFmpegWorker = () => {
       removeSilenceFromAudio: function(audioBuffer, options = {}) {
         try {
           const {
-            silenceThreshold = 0.005,    // Reduced from 0.01 to be less aggressive
-            minSilenceDuration = 1.0,    // Increased from 0.5 to preserve natural pauses
+            silenceThreshold = 0.005,    // Low threshold to only detect true silence
+            minSilenceDuration = 1.5,    // Only remove silences longer than 1.5 seconds
             sampleRate = 44100
           } = options;
           
@@ -127,8 +127,8 @@ const createFFmpegWorker = () => {
                     result.push(float32Array[j]);
                   }
                 } else {
-                  // Replace long silences with shorter ones (0.3 seconds instead of 0.1)
-                  const shortSilenceSamples = Math.floor(0.3 * sampleRate);
+                  // Replace long silences with a brief pause (0.15 seconds)
+                  const shortSilenceSamples = Math.floor(0.15 * sampleRate);
                   for (let j = 0; j < shortSilenceSamples; j++) {
                     result.push(0);
                   }
@@ -144,7 +144,7 @@ const createFFmpegWorker = () => {
           
           // Handle trailing silence
           if (silenceStart !== -1 && silenceLength >= minSilenceSamples) {
-            const shortSilenceSamples = Math.floor(0.3 * sampleRate);
+            const shortSilenceSamples = Math.floor(0.15 * sampleRate);
             for (let j = 0; j < shortSilenceSamples; j++) {
               result.push(0);
             }
@@ -663,8 +663,8 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
           type: "removeSilence",
           audioBuffer: float32Data.buffer,
           options: {
-            silenceThreshold: 0.01, // Amplitude threshold for silence
-            minSilenceDuration: 0.5, // Minimum silence duration to remove (seconds)
+            silenceThreshold: 0.005, // Lower threshold to only detect true silence
+            minSilenceDuration: 1.5, // Only remove silences longer than 1.5 seconds
             sampleRate: originalSampleRate, // Preserve original sample rate to avoid speed changes
             fileName: file.name,
             fileType: file.type,
