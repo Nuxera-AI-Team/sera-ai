@@ -6,13 +6,14 @@
 
 /**
  * Default audio sample rate in Hz.
- * 16000 Hz (16 kHz) is optimal for speech recognition:
- * - Standard for telephony and speech processing
- * - Captures frequencies up to 8 kHz (sufficient for human speech)
- * - Smaller file sizes compared to 44100 Hz
- * - Compatible with most speech-to-text APIs
+ * 48000 Hz (48 kHz) is the standard for most browser AudioContext:
+ * - Matches most hardware default sample rates (44100 or 48000 Hz)
+ * - Used as fallback when actual sample rate cannot be determined
+ * - Ensures audio playback speed is correct if fallback is needed
+ * - Note: The actual recording uses audioContext.sampleRate which is stored
+ *   in recordingSampleRateRef for use throughout the recording session
  */
-export const AUDIO_SAMPLE_RATE = 16000;
+export const AUDIO_SAMPLE_RATE = 48000;
 
 /**
  * Silence detection threshold in amplitude (0-1 range).
