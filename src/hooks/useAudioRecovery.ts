@@ -59,11 +59,144 @@ const useAudioRecovery = (
   const DB_VERSION = 1;
   const MAX_RETRY_COUNT = 3;
 
+  const createAudioEncodingWorker = () => {
+    const workerCode = `
+      console.log("Audio encoding worker loaded");
+
+      self.onmessage = function (e) {
+        const { command, data, id } = e.data;
+
+        try {
+          switch (command) {
+            case "encodeFloat32ToBase64": {
+              const { audioData } = data;
+
+              self.postMessage({
+                type: "progress",
+                id,
+                message: "Converting audio data...",
+              });
+
+              const float32Array =
+                audioData instanceof Float32Array ? audioData : new Float32Array(audioData);
+
+              console.log("Worker encoding audio:", {
+                length: float32Array.length,
+                firstSamples: Array.from(float32Array.slice(0, 10)),
+                hasValidData: Array.from(float32Array).some((sample) => sample !== 0),
+              });
+
+              const buffer = new ArrayBuffer(float32Array.length * 4);
+              const view = new Float32Array(buffer);
+              view.set(float32Array);
+
+              const bytes = new Uint8Array(buffer);
+              const chunkSize = 8192;
+              let binary = "";
+
+              for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.slice(i, i + chunkSize);
+                binary += String.fromCharCode.apply(null, Array.from(chunk));
+
+                if (i % (chunkSize * 10) === 0 && i > 0) {
+                  const progress = Math.round((i / bytes.length) * 100);
+                  self.postMessage({
+                    type: "progress",
+                    id,
+                    progress,
+                    message: "Encoding... " + progress + "%",
+                  });
+                }
+              }
+
+              const base64 = btoa(binary);
+
+              self.postMessage({
+                type: "complete",
+                id,
+                result: base64,
+              });
+              break;
+            }
+
+            case "decodeBase64ToFloat32": {
+              const { base64Data } = data;
+
+              self.postMessage({
+                type: "progress",
+                id,
+                message: "Decoding audio data...",
+              });
+
+              try {
+                const binary = atob(base64Data);
+
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                  bytes[i] = binary.charCodeAt(i);
+                }
+
+                const float32Result = new Float32Array(bytes.buffer);
+
+                console.log("Worker decoded audio:", {
+                  length: float32Result.length,
+                  firstSamples: Array.from(float32Result.slice(0, 10)),
+                  hasValidData: Array.from(float32Result).some((sample) => sample !== 0),
+                });
+
+                self.postMessage({
+                  type: "complete",
+                  id,
+                  result: Array.from(float32Result),
+                });
+              } catch (decodeError) {
+                self.postMessage({
+                  type: "error",
+                  id,
+                  error: "Decode failed: " + decodeError.message,
+                });
+              }
+              break;
+            }
+
+            default:
+              self.postMessage({
+                type: "error",
+                id,
+                error: "Unknown command: " + command,
+              });
+          }
+        } catch (error) {
+          console.error("Worker error:", error);
+          self.postMessage({
+            type: "error",
+            id,
+            error: error.message,
+            stack: error.stack,
+          });
+        }
+      };
+
+      self.onerror = function (error) {
+        console.error("Worker script error:", error);
+        self.postMessage({
+          type: "error",
+          error: error.message || "Unknown worker error",
+        });
+      };
+    `;
+
+    const blob = new Blob([workerCode], { type: "application/javascript" });
+    return URL.createObjectURL(blob);
+  };
+
   // Initialize the encoding worker
   const initWorker = useCallback(() => {
     if (!workerRef.current) {
       try {
-        workerRef.current = new Worker("/audio-encoding-worker.js");
+        const workerUrl = createAudioEncodingWorker();
+        workerRef.current = new Worker(workerUrl);
+        URL.revokeObjectURL(workerUrl);
 
         workerRef.current.onmessage = (e) => {
           const { type, id, result, error, progress, message } = e.data;
