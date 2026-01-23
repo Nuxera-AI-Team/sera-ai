@@ -425,6 +425,7 @@ const useAudioRecorder = ({
   const {
     removeSilence,
     isLoaded,
+    ffmpegLoaded,
     isConverting,
     loadFFmpeg,
     progress,
@@ -433,14 +434,14 @@ const useAudioRecorder = ({
     convertToFlac,
   } = useFFmpegConverter();
 
-  // Add ref to track the current isLoaded value
-  const isLoadedRef = React.useRef(isLoaded);
+  // Add ref to track the current ffmpegLoaded value (for WASM loading state)
+  const ffmpegLoadedRef = React.useRef(ffmpegLoaded);
 
-  // Update the ref whenever isLoaded changes
+  // Update the ref whenever ffmpegLoaded changes
   React.useEffect(() => {
-    isLoadedRef.current = isLoaded;
-    console.log(`🔄 isLoadedRef updated to: ${isLoaded}`);
-  }, [isLoaded]);
+    ffmpegLoadedRef.current = ffmpegLoaded;
+    console.log(`🔄 ffmpegLoadedRef updated to: ${ffmpegLoaded}`);
+  }, [ffmpegLoaded]);
 
   React.useEffect(() => {
     selectedModelRef.current = selectedModel;
@@ -481,26 +482,26 @@ const useAudioRecorder = ({
   React.useEffect(() => {
     let isMounted = true;
 
-    // Only initialize FFmpeg once
-    if (!isLoadedRef.current) {
+    // Only initialize FFmpeg WASM once
+    if (!ffmpegLoadedRef.current) {
       (async () => {
-        console.log("Initializing FFmpeg…");
+        console.log("Initializing FFmpeg WASM…");
         try {
           const ok = await loadFFmpeg();
           if (isMounted) {
             console.log("FFmpeg init returned:", ok);
             if (ok) {
-              console.log("FFmpeg initialized successfully for audio recorder");
+              console.log("FFmpeg WASM initialized successfully for audio recorder");
             }
           }
         } catch (error) {
           if (isMounted) {
-            console.error("FFmpeg initialization failed:", error);
+            console.error("FFmpeg WASM initialization failed:", error);
           }
         }
       })();
     } else {
-      console.log("FFmpeg already initialized, skipping");
+      console.log("FFmpeg WASM already initialized, skipping");
     }
 
     return () => {
@@ -596,10 +597,10 @@ const useAudioRecorder = ({
       isPausedChunk = false,
       sampleRateOverride?: number
     ) => {
-      const currentIsLoaded = isLoadedRef.current;
+      const currentFfmpegLoaded = ffmpegLoadedRef.current;
 
       console.log("🔧 uploadChunkToServer called with:", {
-        isLoaded: currentIsLoaded,
+        ffmpegLoaded: currentFfmpegLoaded,
         silenceRemovalEnabled: removeSilenceRef.current,
         hasRemoveSilenceFunction: typeof removeSilence === "function",
         isFinalChunk,
@@ -691,7 +692,7 @@ const useAudioRecorder = ({
             console.log(`[INFO] Original WAV file: ${wavFile.size} bytes, ${wavFile.name}`);
 
             // Apply silence removal if enabled
-            if (currentIsLoaded && removeSilenceRef.current) {
+            if (currentFfmpegLoaded && removeSilenceRef.current) {
               try {
                 console.log("[SILENCE] Attempting to remove silence from audio chunk...");
                 const processedFile = await removeSilence(wavFile);

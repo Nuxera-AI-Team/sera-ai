@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import { createFFmpeg, fetchFile, FFmpeg } from "@ffmpeg/ffmpeg";
 import { MIN_VALID_SAMPLE_RATE, MAX_VALID_SAMPLE_RATE } from "../constants/audio";
 
@@ -303,44 +303,68 @@ interface UseFFmpegConverterReturn {
   reset: () => void;
 }
 
+// Module-level state to share FFmpeg instance across all hook instances
+let ffmpegLoadingPromise: Promise<boolean> | null = null;
+let ffmpegInstance: FFmpeg | null = null;
+
 const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   const [isLoaded, setIsLoaded] = useState(true); // Always loaded since we use embedded worker
-  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [ffmpegLoaded, setFfmpegLoaded] = useState(ffmpegInstance !== null);
   const [isConverting, setIsConverting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
-  const ffmpegRef = useRef<FFmpeg | null>(null);
 
   const loadFFmpeg = useCallback(async (): Promise<boolean> => {
-    // Load FFmpeg WASM for FLAC conversion
-    if (ffmpegRef.current && ffmpegLoaded) {
-      return true;
-    }
-
-    try {
-      setStatusMessage("Loading FFmpeg...");
-      const ffmpeg = createFFmpeg({
-        log: false,
-        progress: ({ ratio }) => {
-          setProgress(Math.round(ratio * 100));
-        },
-      });
-
-      await ffmpeg.load();
-      ffmpegRef.current = ffmpeg;
+    // Already loaded
+    if (ffmpegInstance) {
+      console.log("[FFmpeg] Already loaded, skipping");
       setFfmpegLoaded(true);
-      setIsLoaded(true);
-      setStatusMessage("");
-      console.log("FFmpeg WASM loaded successfully");
       return true;
-    } catch (err) {
-      console.error("Failed to load FFmpeg:", err);
-      setError("Failed to load FFmpeg");
-      setStatusMessage("");
-      return false;
     }
-  }, [ffmpegLoaded]);
+
+    // If already loading, wait for that promise
+    if (ffmpegLoadingPromise) {
+      console.log("[FFmpeg] Already loading, waiting for existing promise");
+      const result = await ffmpegLoadingPromise;
+      if (result) {
+        setFfmpegLoaded(true);
+      }
+      return result;
+    }
+
+    // Start loading
+    ffmpegLoadingPromise = (async () => {
+      try {
+        const cdnCorePath = 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js';
+        console.log("[FFmpeg] Loading from CDN:", cdnCorePath);
+        setStatusMessage("Loading FFmpeg...");
+        const ffmpeg = createFFmpeg({
+          log: false,
+          corePath: cdnCorePath,
+          progress: ({ ratio }) => {
+            setProgress(Math.round(ratio * 100));
+          },
+        });
+
+        await ffmpeg.load();
+        ffmpegInstance = ffmpeg;
+        setFfmpegLoaded(true);
+        setIsLoaded(true);
+        setStatusMessage("");
+        console.log("[FFmpeg] WASM loaded successfully from CDN");
+        return true;
+      } catch (err) {
+        console.error("Failed to load FFmpeg:", err);
+        setError("Failed to load FFmpeg");
+        setStatusMessage("");
+        ffmpegLoadingPromise = null; // Allow retry on failure
+        return false;
+      }
+    })();
+
+    return ffmpegLoadingPromise;
+  }, []);
 
   const convertToWav = useCallback(
     async (
@@ -413,7 +437,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   const convertToFlac = useCallback(
     async (wavFile: File): Promise<File | null> => {
       // Ensure FFmpeg is loaded
-      if (!ffmpegRef.current || !ffmpegLoaded) {
+      if (!ffmpegInstance || !ffmpegLoaded) {
         const loaded = await loadFFmpeg();
         if (!loaded) {
           console.error("Failed to load FFmpeg for FLAC conversion");
@@ -421,7 +445,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
         }
       }
 
-      const ffmpeg = ffmpegRef.current;
+      const ffmpeg = ffmpegInstance;
       if (!ffmpeg) {
         console.error("FFmpeg not available");
         return wavFile;
@@ -707,7 +731,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   }, []);
 
   return {
-    ffmpeg: ffmpegRef.current,
+    ffmpeg: ffmpegInstance,
     isLoaded,
     ffmpegLoaded,
     isConverting,
