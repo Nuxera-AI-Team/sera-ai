@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { AudioDictation, AudioRecorder } from "../src";
+import AudioCapture from "../src/AudioCapture";
 import useAudioRecorder from "../src/hooks/useAudioRecorder";
 
 const AudioTestPanel = () => {
@@ -85,6 +86,35 @@ const TestApp = () => {
   const [medicalNoteResult, setMedicalNoteResult] = useState<string>("");
   const [dictationResult, setDictationResult] = useState<string>("");
   const [errorResult, setErrorResult] = useState<string>("");
+
+  const handleAudioChunk = (
+    audioData: Float32Array,
+    sequence: number,
+    isFinal: boolean,
+    sampleRate: number
+  ) => {
+    console.log(`Received audio chunk ${sequence}:`, {
+      length: audioData.length,
+      duration: audioData.length / sampleRate,
+      isFinal,
+    });
+  };
+
+  const handleAudioComplete = (finalAudio: Float32Array, sampleRate: number) => {
+    console.log("Recording complete! Final audio:", {
+      length: finalAudio.length,
+      duration: finalAudio.length / sampleRate,
+      sizeInMB: (finalAudio.length * 4) / (1024 * 1024),
+    });
+  };
+
+  const handleAudioFile = (audioFile: File) => {
+    console.log("Audio file created:", {
+      name: audioFile.name,
+      size: audioFile.size,
+      type: audioFile.type,
+    });
+  };
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f5f5f5" }}>
@@ -246,6 +276,41 @@ const TestApp = () => {
           >
             {errorResult || "(Errors will appear here)"}
           </p>
+        </div>
+
+        <div
+          style={{
+            border: "1px solid #e0e0e0",
+            borderRadius: "8px",
+            padding: "20px",
+            marginBottom: "30px",
+            backgroundColor: "#ffffff",
+          }}
+        >
+          <h3 style={{ margin: "0 0 16px 0", color: "#2f3a4f" }}>Audio Capture</h3>
+          <div style={{ marginBottom: "20px" }}>
+            <h4 style={{ margin: "0 0 8px 0", color: "#333" }}>Basic Recording (Raw Audio)</h4>
+            <AudioCapture
+              onAudioChunk={handleAudioChunk}
+              onAudioComplete={handleAudioComplete}
+              chunkDuration={30}
+              format="raw"
+              showDownload={true}
+            />
+          </div>
+          <div>
+            <h4 style={{ margin: "0 0 8px 0", color: "#333" }}>
+              Recording with Silence Removal (WAV Format)
+            </h4>
+            <AudioCapture
+              onAudioFile={handleAudioFile}
+              silenceRemoval={true}
+              chunkDuration={15}
+              format="wav"
+              showDownload={true}
+              className="custom-recording-button"
+            />
+          </div>
         </div>
       </div>
     </div>
