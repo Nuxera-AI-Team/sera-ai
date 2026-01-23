@@ -3,9 +3,11 @@ import { AudioDictation, AudioRecorder } from "../src";
 import AudioCapture from "../src/AudioCapture";
 import useAudioRecorder from "../src/hooks/useAudioRecorder";
 
+const apiKey = "8f764fec-8fee-4d94-88b2-3486581d6bda";
+
 const AudioTestPanel = () => {
   const { testAudioCapture, validateMicrophoneAccess, audioLevel, isRecording } = useAudioRecorder({
-    apiKey: "test-key",
+    apiKey: apiKey,
     speciality: "general_practice",
     onTranscriptionUpdate: () => {},
     onTranscriptionComplete: () => {},
@@ -91,8 +93,6 @@ const TestApp = () => {
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
   const [audioPreviewId, setAudioPreviewId] = useState<string | null>(null);
   const [audioPreviewSampleRate, setAudioPreviewSampleRate] = useState<number | null>(null);
-
-  const apiKey = "8f764fec-8fee-4d94-88b2-3486581d6bda";
   const apiBackend =
     (import.meta as any).env?.VITE_API_BACKEND ||
     ((globalThis as any).process?.env?.NEXT_PUBLIC_API_BACKEND as string | undefined) ||
