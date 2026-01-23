@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AudioDictation, AudioRecorder } from "../src";
 import AudioCapture from "../src/AudioCapture";
 import useAudioRecorder from "../src/hooks/useAudioRecorder";
@@ -86,6 +86,30 @@ const TestApp = () => {
   const [medicalNoteResult, setMedicalNoteResult] = useState<string>("");
   const [dictationResult, setDictationResult] = useState<string>("");
   const [errorResult, setErrorResult] = useState<string>("");
+  const [lastSessionId, setLastSessionId] = useState<string | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
+  const [audioPreviewId, setAudioPreviewId] = useState<string | null>(null);
+
+  const apiKey = "8f764fec-8fee-4d94-88b2-3486581d6bda";
+  const apiBackend =
+    (import.meta as any).env?.VITE_API_BACKEND ||
+    ((globalThis as any).process?.env?.NEXT_PUBLIC_API_BACKEND as string | undefined) ||
+    "http://localhost:3000";
+
+  const cleanupAudioPreview = () => {
+    if (audioPreviewUrl) {
+      window.URL.revokeObjectURL(audioPreviewUrl);
+      setAudioPreviewUrl(null);
+      setAudioPreviewId(null);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      cleanupAudioPreview();
+    };
+  }, [audioPreviewUrl]);
 
   const handleAudioChunk = (
     audioData: Float32Array,
@@ -116,6 +140,120 @@ const TestApp = () => {
     });
   };
 
+  const downloadLastSessionAudio = async () => {
+    if (!lastSessionId || !apiKey) {
+      alert("No session available for download yet.");
+      return;
+    }
+
+    try {
+      setIsDownloading(true);
+      const res = await fetch(`${apiBackend}/api/transcribe/download-audio/${lastSessionId}`, {
+        headers: {
+          "x-api-key": String(apiKey),
+        },
+      });
+
+      if (!res.ok) {
+        let errorMsg = "Failed to download audio";
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const error = await res.json();
+          errorMsg = error.error || errorMsg;
+        } else if (res.status === 404) {
+          errorMsg = "Audio file not found. It may still be processing or unavailable.";
+        }
+        setIsDownloading(false);
+        alert(errorMsg);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `encounter-${lastSessionId}-audio.wav`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setIsDownloading(false);
+    } catch (err) {
+      setIsDownloading(false);
+      alert("Failed to download audio");
+      console.error(err);
+    }
+  };
+
+  const handlePreviewAudio = async () => {
+    if (!lastSessionId || !apiKey) {
+      alert("No session available for preview yet.");
+      return;
+    }
+
+    if (audioPreviewId === lastSessionId) {
+      cleanupAudioPreview();
+      return;
+    }
+
+    try {
+      setAudioPreviewId(lastSessionId);
+      setAudioPreviewUrl(null);
+      const res = await fetch(`${apiBackend}/api/transcribe/download-audio/${lastSessionId}`, {
+        headers: {
+          "x-api-key": String(apiKey),
+        },
+      });
+
+      if (!res.ok) {
+        let errorMsg = "Failed to load audio";
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const error = await res.json();
+          errorMsg = error.error || errorMsg;
+        } else if (res.status === 404) {
+          errorMsg = "Audio file not found. It may still be processing or unavailable.";
+        }
+        console.error("[Preview] Error response:", errorMsg);
+        alert(errorMsg);
+        setAudioPreviewId(null);
+        return;
+      }
+
+      const contentType = res.headers.get("content-type") || "audio/wav";
+      const blob = await res.blob();
+      let fixedBlob = blob;
+      if (!blob.type || blob.type === "" || blob.type === "application/octet-stream") {
+        try {
+          fixedBlob = new Blob([blob], { type: contentType });
+        } catch (e) {
+          console.warn("[Preview] Failed to fix blob type for Safari:", e);
+        }
+      }
+
+      const url = window.URL.createObjectURL(fixedBlob);
+      setAudioPreviewUrl(url);
+
+      setTimeout(() => {
+        const audioElem = document.querySelector(
+          'audio[src="' + url + '"]'
+        ) as HTMLAudioElement | null;
+        if (audioElem) {
+          audioElem.load();
+          audioElem.pause();
+          audioElem.currentTime = 0;
+          audioElem.play().catch((err) => {
+            console.warn("[Preview] Safari play() error:", err);
+          });
+        }
+      }, 100);
+    } catch (err) {
+      console.error("[Preview] Exception:", err);
+      alert("Failed to load audio");
+      setAudioPreviewId(null);
+    }
+  };
+
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f5f5f5" }}>
       <div style={{ padding: "40px", maxWidth: "600px", margin: "0 auto" }}>
@@ -140,13 +278,14 @@ const TestApp = () => {
           <h3 style={{ margin: "0 0 16px 0", color: "#2f3a4f" }}>Transcription</h3>
           <AudioRecorder
             apiBaseUrl="http://localhost:3000"
-            apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
+            apiKey={apiKey}
             speciality="general_practice"
-            onTranscriptionComplete={(text, classification) => {
+            onTranscriptionComplete={(text, classification, sessionId) => {
               console.log("Custom API transcription:", text);
               setTranscriptionResult(text);
               setMedicalNoteResult(formatMedicalNote(classification?.classifiedInfo));
               setErrorResult("");
+              setLastSessionId(sessionId || null);
             }}
             onError={(error) => {
               console.error("Custom API error:", error);
@@ -166,7 +305,7 @@ const TestApp = () => {
         >
           <h3 style={{ margin: "0 0 16px 0", color: "#2f3a4f" }}>Dictation</h3>
           <AudioDictation
-            apiKey="8f764fec-8fee-4d94-88b2-3486581d6bda"
+            apiKey={apiKey}
             apiBaseUrl="http://localhost:3000"
             doctorName="Dr. Smith"
             onDictationStart={() => {
@@ -204,6 +343,55 @@ const TestApp = () => {
           >
             {transcriptionResult || "(Transcriptions will appear here)"}
           </p>
+        </div>
+
+        <div
+          style={{
+            backgroundColor: "#fdf6f0",
+            padding: "16px",
+            borderRadius: "8px",
+            marginBottom: "16px",
+          }}
+        >
+          <h4 style={{ margin: "0 0 8px 0", color: "#5c3a1e" }}>Audio Download & Preview:</h4>
+          <p style={{ margin: "0 0 12px 0", color: "#7a5a3a", fontSize: "14px" }}>
+            Session ID: {lastSessionId || "(No transcription yet)"}
+          </p>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+            <button
+              onClick={downloadLastSessionAudio}
+              disabled={!lastSessionId || isDownloading}
+              style={{
+                padding: "8px 16px",
+                backgroundColor: lastSessionId && !isDownloading ? "#9c5c2a" : "#d3c2b4",
+                color: "#fff",
+                border: "none",
+                borderRadius: "4px",
+                cursor: lastSessionId && !isDownloading ? "pointer" : "not-allowed",
+              }}
+            >
+              {isDownloading ? "Downloading..." : "Download Audio"}
+            </button>
+            <button
+              onClick={handlePreviewAudio}
+              disabled={!lastSessionId}
+              style={{
+                padding: "8px 16px",
+                backgroundColor: lastSessionId ? "#5d7aa6" : "#c5d0df",
+                color: "#fff",
+                border: "none",
+                borderRadius: "4px",
+                cursor: lastSessionId ? "pointer" : "not-allowed",
+              }}
+            >
+              {audioPreviewId === lastSessionId ? "Stop Preview" : "Preview Audio"}
+            </button>
+          </div>
+          {audioPreviewUrl ? (
+            <div style={{ marginTop: "12px" }}>
+              <audio controls src={audioPreviewUrl} style={{ width: "100%" }} />
+            </div>
+          ) : null}
         </div>
 
         <div
