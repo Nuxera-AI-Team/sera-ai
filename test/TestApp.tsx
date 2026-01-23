@@ -90,6 +90,7 @@ const TestApp = () => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
   const [audioPreviewId, setAudioPreviewId] = useState<string | null>(null);
+  const [audioPreviewSampleRate, setAudioPreviewSampleRate] = useState<number | null>(null);
 
   const apiKey = "8f764fec-8fee-4d94-88b2-3486581d6bda";
   const apiBackend =
@@ -102,6 +103,7 @@ const TestApp = () => {
       window.URL.revokeObjectURL(audioPreviewUrl);
       setAudioPreviewUrl(null);
       setAudioPreviewId(null);
+      setAudioPreviewSampleRate(null);
     }
   };
 
@@ -231,6 +233,33 @@ const TestApp = () => {
         }
       }
 
+      try {
+        const buffer = await fixedBlob.arrayBuffer();
+        if (buffer.byteLength >= 28) {
+          const view = new DataView(buffer);
+          const riff = String.fromCharCode(
+            view.getUint8(0),
+            view.getUint8(1),
+            view.getUint8(2),
+            view.getUint8(3)
+          );
+          const wave = String.fromCharCode(
+            view.getUint8(8),
+            view.getUint8(9),
+            view.getUint8(10),
+            view.getUint8(11)
+          );
+          if (riff === "RIFF" && wave === "WAVE") {
+            setAudioPreviewSampleRate(view.getUint32(24, true));
+          } else {
+            setAudioPreviewSampleRate(null);
+          }
+        }
+      } catch (parseError) {
+        console.warn("[Preview] Failed to parse WAV header:", parseError);
+        setAudioPreviewSampleRate(null);
+      }
+
       const url = window.URL.createObjectURL(fixedBlob);
       setAudioPreviewUrl(url);
 
@@ -356,6 +385,10 @@ const TestApp = () => {
           <h4 style={{ margin: "0 0 8px 0", color: "#5c3a1e" }}>Audio Download & Preview:</h4>
           <p style={{ margin: "0 0 12px 0", color: "#7a5a3a", fontSize: "14px" }}>
             Session ID: {lastSessionId || "(No transcription yet)"}
+          </p>
+          <p style={{ margin: "0 0 12px 0", color: "#7a5a3a", fontSize: "14px" }}>
+            Preview sample rate:{" "}
+            {audioPreviewSampleRate ? `${audioPreviewSampleRate} Hz` : "(Unknown)"}
           </p>
           <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
             <button

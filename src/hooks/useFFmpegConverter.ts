@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { createFFmpeg, fetchFile, FFmpeg } from "@ffmpeg/ffmpeg";
-import { AUDIO_SAMPLE_RATE } from "../constants/audio";
+import { MIN_VALID_SAMPLE_RATE, MAX_VALID_SAMPLE_RATE } from "../constants/audio";
 
 interface FFmpegConverterOptions {
   quality?: number;
@@ -9,15 +9,26 @@ interface FFmpegConverterOptions {
 
 // Embedded FFmpeg Worker - no external files needed
 const createFFmpegWorker = () => {
-  // Inject the constant value into the worker code
-  const DEFAULT_SAMPLE_RATE = AUDIO_SAMPLE_RATE;
+  // Inject constants into the worker code
+  const minSampleRate = MIN_VALID_SAMPLE_RATE;
+  const maxSampleRate = MAX_VALID_SAMPLE_RATE;
 
   const workerCode = `
     let ffmpegModule = null;
-    const DEFAULT_SAMPLE_RATE = ${DEFAULT_SAMPLE_RATE};
+
+    // Injected constants from audio.ts
+    const MIN_SAMPLE_RATE = ${minSampleRate};
+    const MAX_SAMPLE_RATE = ${maxSampleRate};
+
+    const validateSampleRate = (sampleRate) => {
+      if (!sampleRate || sampleRate < MIN_SAMPLE_RATE || sampleRate > MAX_SAMPLE_RATE) {
+        throw new Error('Audio captured with invalid sample rate: ' + sampleRate + '. Sample rate must be between ' + MIN_SAMPLE_RATE + 'Hz and ' + MAX_SAMPLE_RATE + 'Hz.');
+      }
+    };
 
     const helperFunctions = {
-      float32ToWavFile: function(left, sampleRate = DEFAULT_SAMPLE_RATE) {
+      float32ToWavFile: function(left, sampleRate) {
+        validateSampleRate(sampleRate);
         const length = left.length;
         const buffer = new ArrayBuffer(44 + length * 2);
         const view = new DataView(buffer);
@@ -56,7 +67,8 @@ const createFFmpegWorker = () => {
       
       processAudioData: function(audioBuffer, options = {}) {
         try {
-          const { quality = 1, bitRate = 128000, sampleRate = DEFAULT_SAMPLE_RATE } = options;
+          const { quality = 1, bitRate = 128000, sampleRate } = options;
+          validateSampleRate(sampleRate);
           const float32Array = new Float32Array(audioBuffer);
           const wavBuffer = this.float32ToWavFile(float32Array, sampleRate);
 
@@ -75,8 +87,9 @@ const createFFmpegWorker = () => {
           const {
             silenceThreshold = 0.005,    // Low threshold to only detect true silence
             minSilenceDuration = 1.5,    // Only remove silences longer than 1.5 seconds
-            sampleRate = DEFAULT_SAMPLE_RATE
+            sampleRate
           } = options;
+          validateSampleRate(sampleRate);
           
           const float32Array = new Float32Array(audioBuffer);
           const minSilenceSamples = Math.floor(minSilenceDuration * sampleRate);
@@ -282,7 +295,7 @@ interface UseFFmpegConverterReturn {
   loadFFmpeg: () => Promise<boolean>;
   convertToWav: (
     audioData: Float32Array,
-    sampleRate?: number,
+    sampleRate: number,
     fileName?: string
   ) => Promise<File | null>;
   convertToFlac: (wavFile: File) => Promise<File | null>;
@@ -332,7 +345,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   const convertToWav = useCallback(
     async (
       audioData: Float32Array,
-      sampleRate: number = AUDIO_SAMPLE_RATE,
+      sampleRate: number,
       fileName: string = "recording.wav"
     ): Promise<File | null> => {
       setIsConverting(true);

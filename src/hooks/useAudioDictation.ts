@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
-import { AUDIO_SAMPLE_RATE } from "../constants/audio";
+import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
 const API_BASE_URL = "https://nuxera.cloud";
 
@@ -356,7 +356,10 @@ const useAudioDictation = ({
   // Move encodeWAV function (unchanged)
   const encodeWAV = (samples: Float32Array) => {
     console.log(`Encoding WAV with ${samples.length} samples`);
-    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+    if (!isValidSampleRate(sampleRate)) {
+      throw new InvalidSampleRateError(sampleRate);
+    }
     console.log(`Using sample rate: ${sampleRate}Hz`);
 
     const buffer = new ArrayBuffer(44 + samples.length * 2);

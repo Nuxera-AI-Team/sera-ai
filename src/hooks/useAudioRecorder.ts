@@ -4,7 +4,7 @@ import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
 import { ClassificationInfoResponse } from "../types";
-import { AUDIO_SAMPLE_RATE } from "../constants/audio";
+import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
 interface AudioRecorderHookProps {
   apiKey: string;
@@ -653,9 +653,9 @@ const useAudioRecorder = ({
 
             console.log();
 
-            const currentSampleRate = sampleRateOverride ?? recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
-            if (!sampleRateOverride && !recordingSampleRateRef.current && !audioContextRef.current?.sampleRate) {
-              console.warn(`[WARN] Using fallback sample rate ${AUDIO_SAMPLE_RATE}Hz - no stored sample rate available`);
+            const currentSampleRate = sampleRateOverride ?? recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+            if (!isValidSampleRate(currentSampleRate)) {
+              throw new InvalidSampleRateError(currentSampleRate);
             }
             console.log(
               `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / currentSampleRate).toFixed(2)}s) at ${currentSampleRate}Hz`
@@ -678,15 +678,11 @@ const useAudioRecorder = ({
               `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
             );
 
-            const sampleRate = sampleRateOverride ?? recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
-            if (!sampleRateOverride && !recordingSampleRateRef.current && !audioContextRef.current?.sampleRate) {
-              console.warn(`[WARN] Using fallback sample rate ${AUDIO_SAMPLE_RATE}Hz for WAV conversion - no stored sample rate available`);
-            }
-            console.log(`[WAV] Converting to WAV with sample rate: ${sampleRate}Hz`);
+            console.log(`[WAV] Converting to WAV with sample rate: ${currentSampleRate}Hz`);
             const timestamp = Date.now();
             const fileName = `audio-chunk-${timestamp}.wav`;
 
-            let wavFile: File | null = await convertToWav(audioData, sampleRate, fileName);
+            let wavFile: File | null = await convertToWav(audioData, currentSampleRate, fileName);
 
             if (!wavFile) {
               throw new Error("WAV conversion failed through FFmpeg");
@@ -1481,48 +1477,6 @@ const useAudioRecorder = ({
     },
     [processNextChunkInQueue, isLoaded]
   );
-
-  const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-
-    const writeString = (offset: number, str: string) => {
-      for (let i = 0; i < str.length; i++) {
-        view.setUint8(offset + i, str.charCodeAt(i));
-      }
-    };
-
-    writeString(0, "RIFF");
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeString(8, "WAVE");
-    writeString(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, "data");
-    view.setUint32(40, samples.length * 2, true);
-
-    let offset = 44;
-    for (let i = 0; i < samples.length; i++) {
-      const sample = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
-    }
-
-    // Create File instead of Blob
-    const timestamp = Date.now();
-    const filename = `audio-chunk-${timestamp}.wav`;
-
-    return new File([view], filename, {
-      type: "audio/wav",
-      lastModified: timestamp,
-    });
-  };
 
   // Add a test function to verify audio capture
   const testAudioCapture = useCallback(async () => {

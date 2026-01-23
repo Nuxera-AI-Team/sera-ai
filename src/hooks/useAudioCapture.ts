@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, MutableRefObject } from "react";
 import useFFmpegConverter from "./useFFmpegConverter";
-import { AUDIO_SAMPLE_RATE } from "../constants/audio";
+import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
 interface AudioCaptureHookProps {
   onAudioChunk?: (
@@ -345,7 +345,10 @@ const useAudioCapture = ({
       // Call chunk callback
       if (onAudioChunk) {
         const sampleRate =
-          recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+          recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+        if (!isValidSampleRate(sampleRate)) {
+          throw new InvalidSampleRateError(sampleRate);
+        }
         onAudioChunk(processedAudio, sequence, isFinal, sampleRate);
       }
 
@@ -364,7 +367,10 @@ const useAudioCapture = ({
         // Call completion callback with raw audio
         if (onAudioComplete) {
           const sampleRate =
-            recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+            recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+          if (!isValidSampleRate(sampleRate)) {
+            throw new InvalidSampleRateError(sampleRate);
+          }
           onAudioComplete(finalAudio, sampleRate);
         }
 
@@ -391,9 +397,13 @@ const useAudioCapture = ({
 
   // Create WAV file from Float32Array
   const createWavFile = useCallback(async (samples: Float32Array): Promise<File> => {
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+    if (!isValidSampleRate(sampleRate)) {
+      throw new InvalidSampleRateError(sampleRate);
+    }
     if (isLoaded && typeof convertToWav === "function") {
       // Use FFmpeg for better quality conversion
-      const result = await convertToWav(samples);
+      const result = await convertToWav(samples, sampleRate);
       return result || float32ToWavFile(samples); // Fallback if conversion fails
     } else {
       // Fallback to manual WAV creation
@@ -420,7 +430,10 @@ const useAudioCapture = ({
 
   // Manual WAV file creation
   const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+    if (!isValidSampleRate(sampleRate)) {
+      throw new InvalidSampleRateError(sampleRate);
+    }
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
 
