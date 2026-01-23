@@ -3,8 +3,13 @@ import useFFmpegConverter from "./useFFmpegConverter";
 import { AUDIO_SAMPLE_RATE } from "../constants/audio";
 
 interface AudioCaptureHookProps {
-  onAudioChunk?: (audioData: Float32Array, sequence: number, isFinal: boolean) => void;
-  onAudioComplete?: (finalAudio: Float32Array) => void;
+  onAudioChunk?: (
+    audioData: Float32Array,
+    sequence: number,
+    isFinal: boolean,
+    sampleRate: number
+  ) => void;
+  onAudioComplete?: (finalAudio: Float32Array, sampleRate: number) => void;
   onAudioFile?: (audioFile: File) => void;
   silenceRemoval?: boolean;
   chunkDuration?: number; // Duration in seconds for each chunk
@@ -339,7 +344,9 @@ const useAudioCapture = ({
 
       // Call chunk callback
       if (onAudioChunk) {
-        onAudioChunk(processedAudio, sequence, isFinal);
+        const sampleRate =
+          recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+        onAudioChunk(processedAudio, sequence, isFinal, sampleRate);
       }
 
       // If final chunk, combine all audio and call completion callbacks
@@ -356,7 +363,9 @@ const useAudioCapture = ({
 
         // Call completion callback with raw audio
         if (onAudioComplete) {
-          onAudioComplete(finalAudio);
+          const sampleRate =
+            recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate ?? AUDIO_SAMPLE_RATE;
+          onAudioComplete(finalAudio, sampleRate);
         }
 
         // Convert to file format if requested
