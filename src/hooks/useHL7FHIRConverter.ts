@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { PatientDetails } from "../types";
 
 interface TranscriptionResponse {
   transcription: string;
@@ -63,8 +64,7 @@ interface TranscriptionRequest {
   sessionId?: string;
   model: string;
   doctorName: string;
-  patientName: string;
-  patientId?: number;
+  patientDetails?: PatientDetails;
   removeSilence: boolean;
   skipDiarization: boolean;
   isFinalChunk: boolean;
@@ -207,6 +207,71 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       .replace(/\n/g, "\\X0A\\") // Newline
       .replace(/\r/g, "\\X0D\\"); // Carriage return
   }, []);
+
+  const formatHL7Date = (date?: Date | string): string => {
+    if (!date) return "";
+    if (date instanceof Date && !isNaN(date.getTime())) {
+      const year = date.getFullYear().toString().padStart(4, "0");
+      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+      const day = date.getDate().toString().padStart(2, "0");
+      return `${year}${month}${day}`;
+    }
+    if (typeof date === "string") {
+      const trimmed = date.trim();
+      if (/^\\d{8}$/.test(trimmed)) return trimmed;
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        const year = parsed.getFullYear().toString().padStart(4, "0");
+        const month = (parsed.getMonth() + 1).toString().padStart(2, "0");
+        const day = parsed.getDate().toString().padStart(2, "0");
+        return `${year}${month}${day}`;
+      }
+    }
+    return "";
+  };
+
+  const formatFHIRDate = (date?: Date | string): string | undefined => {
+    if (!date) return undefined;
+    if (date instanceof Date && !isNaN(date.getTime())) {
+      const year = date.getFullYear().toString().padStart(4, "0");
+      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+      const day = date.getDate().toString().padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+    if (typeof date === "string") {
+      const trimmed = date.trim();
+      if (/^\\d{4}-\\d{2}-\\d{2}$/.test(trimmed)) return trimmed;
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        const year = parsed.getFullYear().toString().padStart(4, "0");
+        const month = (parsed.getMonth() + 1).toString().padStart(2, "0");
+        const day = parsed.getDate().toString().padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+    }
+    return undefined;
+  };
+
+  const mapHL7Gender = (gender?: string): string => {
+    if (!gender) return "U";
+    const normalized = gender.toLowerCase();
+    if (normalized === "male" || normalized === "m") return "M";
+    if (normalized === "female" || normalized === "f") return "F";
+    if (normalized === "other" || normalized === "o") return "O";
+    return "U";
+  };
+
+  const mapFHIRGender = (
+    gender?: string
+  ): "male" | "female" | "other" | "unknown" | undefined => {
+    if (!gender) return undefined;
+    const normalized = gender.toLowerCase();
+    if (normalized === "male" || normalized === "m") return "male";
+    if (normalized === "female" || normalized === "f") return "female";
+    if (normalized === "other" || normalized === "o") return "other";
+    if (normalized === "unknown" || normalized === "u") return "unknown";
+    return "unknown";
+  };
 
   // Parse HL7 message into segments
   const parseHL7 = useCallback((hl7String: string): HL7Segment[] => {
@@ -724,9 +789,14 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       );
 
       // PID - Patient Identification
-      const escapedPatientName = escapeHL7(requestData.patientName || "Unknown Patient");
+      const patientId = requestData.patientDetails?.id?.toString() || "";
+      const escapedPatientName = escapeHL7(
+        requestData.patientDetails?.name || "Unknown Patient"
+      );
+      const patientDob = formatHL7Date(requestData.patientDetails?.dateOfBirth);
+      const patientGender = mapHL7Gender(requestData.patientDetails?.gender);
       hl7Lines.push(
-        `PID|1||${requestData.patientId || ""}||${escapedPatientName}^||${timestamp}|U||||||||||${
+        `PID|1||${patientId}||${escapedPatientName}^||${patientDob}|${patientGender}||||||||||${
           requestData.userId || ""
         }|||||||||||||||`
       );
@@ -744,6 +814,12 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
           `OBX|${obxSequence++}|TX|SESSION_ID^Session Identifier||${escapeHL7(
             requestData.sessionId
           )}|||||F|||${timestamp}`
+        );
+      }
+
+      if (requestData.patientDetails?.age !== undefined) {
+        hl7Lines.push(
+          `OBX|${obxSequence++}|NM|PATIENT_AGE^Patient Age||${requestData.patientDetails.age}|||||F|||${timestamp}`
         );
       }
 
@@ -834,7 +910,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
 
       return formData;
     },
-    [escapeHL7]
+    [escapeHL7, formatHL7Date, mapHL7Gender]
   );
 
   // Create FHIR-formatted transcription request
@@ -886,20 +962,31 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
             resource: {
               resourceType: "Patient",
               id: `${requestId}-patient`,
-              identifier: requestData.patientId
+              identifier: requestData.patientDetails?.id
                 ? [
                     {
                       system: "http://nuxera.ai/patient-id",
-                      value: requestData.patientId.toString(),
+                      value: requestData.patientDetails.id.toString(),
                     },
                   ]
                 : [],
               name: [
                 {
-                  family: requestData.patientName || "Unknown",
+                  family: requestData.patientDetails?.name || "Unknown",
                   given: ["Patient"],
                 },
               ],
+              gender: mapFHIRGender(requestData.patientDetails?.gender),
+              birthDate: formatFHIRDate(requestData.patientDetails?.dateOfBirth),
+              extension:
+                requestData.patientDetails?.age !== undefined
+                  ? [
+                      {
+                        url: "http://hl7.org/fhir/StructureDefinition/patient-age",
+                        valueUnsignedInt: requestData.patientDetails.age,
+                      },
+                    ]
+                  : undefined,
             },
           },
 
@@ -1123,7 +1210,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
 
       return formData;
     },
-    []
+    [formatFHIRDate, mapFHIRGender]
   );
 
   const clearError = useCallback(() => {

@@ -4,8 +4,13 @@ interface AudioSession {
   id: string;
   audioChunks: Record<number, string>; // Change from array to object
   metadata: {
-    patientId?: number;
-    patientName?: string;
+    patientDetails?: {
+      id?: number;
+      name?: string;
+      gender?: string;
+      dateOfBirth?: Date | string;
+      age?: number;
+    };
     patientHistory?: string;
     speciality: string;
     sampleRate: number; // Store original sample rate for correct WAV conversion on retry
@@ -23,8 +28,13 @@ interface AudioRecoveryHookReturn {
   createSession: (
     sessionId: string,
     metadata: {
-      patientId?: number;
-      patientName?: string;
+      patientDetails?: {
+        id?: number;
+        name?: string;
+        gender?: string;
+        dateOfBirth?: Date | string;
+        age?: number;
+      };
       patientHistory?: string;
       speciality: string;
       sampleRate: number;
@@ -410,8 +420,13 @@ const useAudioRecovery = (
     async (
       sessionId: string,
       metadata: {
-        patientId?: number;
-        patientName?: string;
+        patientDetails?: {
+          id?: number;
+          name?: string;
+          gender?: string;
+          dateOfBirth?: Date | string;
+          age?: number;
+        };
         patientHistory?: string;
         speciality: string;
         sampleRate: number;

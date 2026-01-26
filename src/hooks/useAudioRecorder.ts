@@ -3,16 +3,15 @@ import useFFmpegConverter from "./useFFmpegConverter";
 import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
-import { ClassificationInfoResponse } from "../types";
+import { ClassificationInfoResponse, PatientDetails } from "../types";
 import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
 interface AudioRecorderHookProps {
   apiKey: string;
   apiBaseUrl?: string;
   speciality: string;
-  patientId?: number;
-  patientName?: string;
   patientHistory?: string;
+  patientDetails?: PatientDetails;
   selectedFormat?: "json" | "hl7" | "fhir";
   skipDiarization?: boolean;
   silenceRemoval?: boolean;
@@ -258,9 +257,8 @@ const useAudioRecorder = ({
   apiKey,
   apiBaseUrl = API_BASE_URL,
   speciality,
-  patientId,
-  patientName,
   patientHistory,
+  patientDetails,
   selectedFormat = "json",
   skipDiarization = true,
   silenceRemoval = true,
@@ -748,13 +746,14 @@ const useAudioRecorder = ({
               );
             }
 
+            const patientDetailsPayload = patientDetails;
+
             // Prepare request data
             const requestData = {
               sessionId: retry ? undefined : sessionIdRef.current || undefined,
               model: selectedModelRef.current,
               doctorName: doctorName,
-              patientName: patientName || "",
-              patientId: patientId,
+              patientDetails: patientDetailsPayload,
               removeSilence: removeSilenceRef.current,
               skipDiarization: skipDiarizationRef.current,
               isFinalChunk: isFinalChunk,
@@ -797,9 +796,10 @@ const useAudioRecorder = ({
                 formData.append("audio", audioFile);
                 formData.append("model", selectedModelRef.current);
                 formData.append("doctorName", doctorName);
-                formData.append("patientName", patientName || "");
                 if (patientHistory) formData.append("patientHistory", patientHistory);
-                if (patientId) formData.append("patientId", patientId.toString());
+                if (patientDetailsPayload) {
+                  formData.append("patientDetails", JSON.stringify(patientDetailsPayload));
+                }
                 formData.append("removeSilence", removeSilenceRef.current.toString());
                 formData.append("skipDiarization", skipDiarizationRef.current.toString());
                 formData.append("isFinalChunk", isFinalChunk.toString());
@@ -1046,8 +1046,8 @@ const useAudioRecorder = ({
       silenceRemoval,
       skipDiarization,
       selectedFormat,
-      patientName,
       patientHistory,
+      patientDetails,
       onTranscriptionComplete,
       speciality,
       removeSilence,
@@ -1182,8 +1182,7 @@ const useAudioRecorder = ({
       // Create session with actual sample rate now that we have audioContext
       if (!isPaused && localSessionIdRef.current) {
         await createSession(localSessionIdRef.current, {
-          patientId,
-          patientName: patientName || undefined,
+          patientDetails: patientDetails || undefined,
           patientHistory: patientHistory || undefined,
           speciality,
           sampleRate: audioContext.sampleRate,
@@ -1282,9 +1281,8 @@ const useAudioRecorder = ({
     validateMicrophoneAccess,
     isPaused,
     createSession,
-    patientId,
-    patientName,
     patientHistory,
+    patientDetails,
     speciality,
     currentDeviceId,
   ]);

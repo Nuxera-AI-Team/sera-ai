@@ -1,3 +1,11 @@
+export interface PatientDetails {
+  id?: number;
+  name?: string;
+  gender?: string;
+  dateOfBirth?: Date | string;
+  age?: number;
+}
+
 export interface AudioRecorderProps {
   /**
    * Speciality of the medical professional using the service
@@ -15,19 +23,14 @@ export interface AudioRecorderProps {
   apiBaseUrl?: string;
 
   /**
-   * Patient ID associated with the recording (optional)
-   */
-  patientId?: number;
-
-  /**
-   * Patient name associated with the recording (optional)
-   */
-  patientName?: string;
-
-  /**
    * Patient history information (optional)
    */
   patientHistory?: string;
+
+  /**
+   * Patient details information (optional)
+   */
+  patientDetails?: PatientDetails;
 
   /**
    * Format for API requests and responses (optional, defaults to "json")

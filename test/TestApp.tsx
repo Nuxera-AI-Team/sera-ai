@@ -309,6 +309,13 @@ const TestApp = () => {
             apiBaseUrl="http://localhost:3000"
             apiKey={apiKey}
             speciality="general_practice"
+            patientDetails={{
+              id: 122,
+              name: "Jane Doe",
+              gender: "female",
+              dateOfBirth: "11/02/1999",
+              age: 26,
+            }}
             onTranscriptionComplete={(text, classification, sessionId) => {
               console.log("Custom API transcription:", text);
               setTranscriptionResult(text);
