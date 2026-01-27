@@ -613,20 +613,28 @@ const useAudioRecorder = ({
       // Save chunk to local session first (always save to IndexedDB regardless of failure state)
       if (audioData && localSessionIdRef.current && !retry) {
         try {
-          console.log(`[DB] Saving chunk ${sequence} to IndexedDB session ${localSessionIdRef.current}`);
+          console.log(
+            `[DB] Saving chunk ${sequence} to IndexedDB session ${localSessionIdRef.current}`
+          );
           await appendAudioToSession(localSessionIdRef.current, audioData, sequence);
-          console.log(`[DB] ✓ Successfully saved audio chunk ${sequence} to IndexedDB (${audioData.length} samples)`);
+          console.log(
+            `[DB] ✓ Successfully saved audio chunk ${sequence} to IndexedDB (${audioData.length} samples)`
+          );
         } catch (error) {
           console.error(`[DB] ✗ Failed to save audio chunk ${sequence} to IndexedDB:`, error);
         }
       } else {
-        console.log(`[DB] Skipping IndexedDB save: audioData=${!!audioData}, sessionId=${localSessionIdRef.current}, retry=${retry}`);
+        console.log(
+          `[DB] Skipping IndexedDB save: audioData=${!!audioData}, sessionId=${localSessionIdRef.current}, retry=${retry}`
+        );
       }
 
       // If a previous chunk has failed, skip server upload but continue recording
       // Show retry UI only when user stops recording (isFinalChunk)
       if (sessionHasFailedChunkRef.current && !retry) {
-        console.log(`[SKIP] Session has failed chunk - skipping server upload for sequence ${sequence}, continuing to record audio`);
+        console.log(
+          `[SKIP] Session has failed chunk - skipping server upload for sequence ${sequence}, continuing to record audio`
+        );
         if (isFinalChunk) {
           // User has stopped recording - now show the retry UI
           setShowRetrySessionPrompt(true);
@@ -652,7 +660,10 @@ const useAudioRecorder = ({
 
             console.log();
 
-            const currentSampleRate = sampleRateOverride ?? recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+            const currentSampleRate =
+              sampleRateOverride ??
+              recordingSampleRateRef.current ??
+              audioContextRef.current?.sampleRate;
             if (!isValidSampleRate(currentSampleRate)) {
               throw new InvalidSampleRateError(currentSampleRate);
             }
@@ -988,7 +999,9 @@ const useAudioRecorder = ({
             localSessionIdRef.current,
             err instanceof Error ? err.message : "Unknown error"
           );
-          console.log(`[FAIL] Chunk ${sequence} failed - session marked as failed, will continue recording audio locally`);
+          console.log(
+            `[FAIL] Chunk ${sequence} failed - session marked as failed, will continue recording audio locally`
+          );
 
           // Only show retry UI when user stops recording (final chunk)
           if (isFinalChunk) {
@@ -1197,7 +1210,7 @@ const useAudioRecorder = ({
       URL.revokeObjectURL(processorUrl);
 
       const processor = new AudioWorkletNode(audioContext, "audio-processor", {
-        processorOptions: { sampleRate: audioContext.sampleRate }
+        processorOptions: { sampleRate: audioContext.sampleRate },
       });
 
       processor.port.onmessage = (event) => {
@@ -1433,18 +1446,19 @@ const useAudioRecorder = ({
     }
 
     const { chunk, isFinal, sequence, isPaused = false } = chunkQueueRef.current.shift()!;
-    console.log(`[QUEUE] Processing chunk ${sequence} from queue, remaining: ${chunkQueueRef.current.length}`);
+    console.log(
+      `[QUEUE] Processing chunk ${sequence} from queue, remaining: ${chunkQueueRef.current.length}`
+    );
     isProcessingQueueRef.current = true;
 
     // uploadChunkToServer handles:
     // 1. Saving to IndexedDB (always, regardless of session failure state)
     // 2. Uploading to server (only if session hasn't failed)
     // 3. Marking session as failed on error
-    uploadChunkToServer(chunk, isFinal, sequence, false, isPaused)
-      .finally(() => {
-        isProcessingQueueRef.current = false;
-        processNextChunkInQueue(); // Continue processing remaining chunks
-      });
+    uploadChunkToServer(chunk, isFinal, sequence, false, isPaused).finally(() => {
+      isProcessingQueueRef.current = false;
+      processNextChunkInQueue(); // Continue processing remaining chunks
+    });
   }, [uploadChunkToServer, isLoaded]);
 
   const enqueueChunk = React.useCallback(
@@ -1454,7 +1468,9 @@ const useAudioRecorder = ({
       sequence: number,
       isPausedChunk = false
     ) => {
-      console.log(`[QUEUE] Enqueuing ${isFinalChunk ? 'FINAL' : isPausedChunk ? 'PAUSED' : 'regular'} chunk ${sequence}, samples: ${audioData?.length || 0}, queue size: ${chunkQueueRef.current.length}`);
+      console.log(
+        `[QUEUE] Enqueuing ${isFinalChunk ? "FINAL" : isPausedChunk ? "PAUSED" : "regular"} chunk ${sequence}, samples: ${audioData?.length || 0}, queue size: ${chunkQueueRef.current.length}`
+      );
 
       if (isFinalChunk) {
         // Only set processing state if session hasn't failed

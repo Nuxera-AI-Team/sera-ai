@@ -1,6 +1,7 @@
 import * as React from "react";
 import { AudioRecorderProps, APIResponse, APIOptions } from "./types";
 import useAudioRecorder from "./hooks/useAudioRecorder";
+import useAutoRetry from "./hooks/useAutoRetry";
 import { Mic, Square, Loader2, Pause, Play, AlertTriangle } from "lucide-react";
 import Toast from "./components/Toast";
 import AudioVisualizerImproved from "./components/AudioVisualizerImproved";
@@ -135,9 +136,38 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     injectTailwindStyles();
   }, []);
 
+  // State to track if auto-retry is needed (for showing message)
+  const [showAutoRetryMessage, setShowAutoRetryMessage] = React.useState(false);
+
+  // Initialize auto-retry hook for low confidence score handling
+  const {
+    processAndRetryInBackground,
+    isRetrying: isAutoRetrying,
+    retryError: autoRetryError,
+    resetRetryState,
+  } = useAutoRetry({
+    apiKey,
+    apiBaseUrl,
+    speciality,
+    patientName: patientDetails?.name,
+    doctorName: undefined, // Can be passed from props if needed
+    userId: undefined, // Can be passed from props if needed
+    patientId: patientDetails?.id,
+    onRetryComplete: (result) => {
+      // Called when background retry completes successfully
+      console.log("[AUTO-RETRY] Background retry complete, updating with new result");
+      setShowAutoRetryMessage(false);
+      onTranscriptionComplete && onTranscriptionComplete(
+        result.transcription,
+        result.classifiedInfo,
+        result.sessionId
+      );
+    },
+  });
+
   const {
     mediaStreamRef,
-    startRecording,
+    startRecording: startRecordingInternal,
     stopRecording,
     pauseRecording,
     resumeRecording,
@@ -182,9 +212,31 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
         "sessionId:",
         sessionId
       );
-      onTranscriptionComplete && onTranscriptionComplete(text, classification, sessionId);
+
+      // Process and check if retry is needed (non-blocking)
+      const result = processAndRetryInBackground(text, classification, sessionId);
+
+      // Show message if retry is being performed in background
+      if (result.needsRetry) {
+        setShowAutoRetryMessage(true);
+        console.log("[AUTO-RETRY] Low confidence detected, retrying in background");
+      }
+
+      // Immediately return original result to user
+      onTranscriptionComplete && onTranscriptionComplete(
+        result.transcription,
+        result.classifiedInfo,
+        result.sessionId
+      );
     },
   });
+
+  // Wrap startRecording to reset retry state for new sessions
+  const startRecording = React.useCallback(() => {
+    resetRetryState();
+    setShowAutoRetryMessage(false);
+    startRecordingInternal();
+  }, [resetRetryState, startRecordingInternal]);
 
   const isEmergencyOrInPatient = speciality === "emergency" || speciality === "in_patient";
   const buttonText = isEmergencyOrInPatient ? "Start Recording" : "Start Transcription";
@@ -390,6 +442,20 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
             </span>
             <span className="block text-xs text-blue-600 dark:text-blue-400 mt-1">
               Please wait while we process your recording
+            </span>
+          </div>
+        </div>
+      )}
+      {/* Show auto-retry message for low confidence */}
+      {(showAutoRetryMessage || isAutoRetrying) && (
+        <div className="flex items-center justify-center space-x-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+          <Loader2 className="animate-spin h-5 w-5 text-blue-600" />
+          <div className="text-center">
+            <span className="block text-sm font-medium text-blue-700 dark:text-blue-300">
+              Low confidence score detected. Auto-retrying for better results...
+            </span>
+            <span className="block text-xs text-blue-600 dark:text-blue-400 mt-1">
+              Your initial results are shown. Updated results will appear shortly.
             </span>
           </div>
         </div>
