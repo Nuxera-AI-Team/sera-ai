@@ -173,9 +173,6 @@ const createAudioProcessorWorker = () => {
             });
             this._audioLevelCheckInterval = 0;
             
-            // Debug: Log audio capture status every few seconds
-            if (this._audioLevelCheckInterval % 1000 === 0) {
-            }
           }
 
           if (audioLevel > this._audioThreshold) {
@@ -231,7 +228,6 @@ const createAudioProcessorWorker = () => {
                 },
                 [flat.buffer]
               );
-              console.log('[UPLOAD] Sending chunk: ' + (this._bufferSize / this._sampleRate).toFixed(1) + 's');
               // Clear buffer after upload
               this._buffer = [];
               this._bufferSize = 0;
@@ -350,42 +346,21 @@ const useAudioRecorder = ({
   } = useAudioRecovery(async (audioChunks, metadata) => {
     // Reprocess session callback - send combined audio as single final chunk
     try {
-      console.log("🔄 Retry callback started with audio chunks:", {
-        chunksCount: audioChunks.length,
-        totalSamples: audioChunks.reduce((sum, chunk) => sum + chunk.length, 0),
-        chunkDetails: audioChunks.map((chunk, idx) => ({
-          index: idx,
-          length: chunk.length,
-          hasData: chunk.length > 0,
-        })),
-      });
-
       if (audioChunks.length === 0) {
         throw new Error("No audio chunks provided for retry");
       }
 
-      // Combine all audio chunks into one
       const combinedAudio = combineAudioChunks(audioChunks);
-
-      console.log("[AUDIO] Combined audio for retry:", {
-        combinedLength: combinedAudio.length,
-        hasAudio: combinedAudio.length > 0,
-      });
+      console.log(`[SERA] Recovery retry | chunks=${audioChunks.length}, samples=${combinedAudio.length}`);
 
       if (combinedAudio.length === 0) {
         throw new Error("Combined audio is empty");
       }
 
-      // Check if uploadChunkToServer is available
       if (!uploadChunkToServerRef.current) {
         throw new Error("Upload function not yet initialized");
       }
 
-      // Generate a fresh session ID for retry (server will create new session)
-      const newSessionId = `session_retry_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      console.log("🆔 Generated new retry session ID:", newSessionId);
-
-      // Send as first AND final chunk to create complete new session
       await uploadChunkToServerRef.current(
         combinedAudio,
         true,
@@ -395,9 +370,9 @@ const useAudioRecorder = ({
         metadata.sampleRate
       );
 
-      console.log("[SUCCESS] Retry upload completed successfully");
+      console.log("[SERA] Recovery retry completed successfully");
     } catch (error) {
-      console.error("[ERROR] Retry session failed:", error);
+      console.error("[SERA] Recovery retry failed:", error);
       throw error;
     }
   });
@@ -438,7 +413,6 @@ const useAudioRecorder = ({
   // Update the ref whenever ffmpegLoaded changes
   React.useEffect(() => {
     ffmpegLoadedRef.current = ffmpegLoaded;
-    console.log(`🔄 ffmpegLoadedRef updated to: ${ffmpegLoaded}`);
   }, [ffmpegLoaded]);
 
   React.useEffect(() => {
@@ -458,12 +432,6 @@ const useAudioRecorder = ({
   }, [selectedFormat]);
 
   React.useEffect(() => {
-    // Use server session ID for callbacks, fallback to local session ID
-    console.log("Triggering onTranscriptionUpdate with:", {
-      alreadyDoneTranscription,
-      sessionId: sessionIdRef.current,
-      localSessionId: localSessionIdRef.current,
-    });
     if (alreadyDoneTranscription.length > 0) {
       onTranscriptionUpdate(
         alreadyDoneTranscription,
@@ -472,34 +440,23 @@ const useAudioRecorder = ({
     }
   }, [alreadyDoneTranscription]);
 
-  // Add useEffect to track speciality changes
-  React.useEffect(() => {
-    console.log("Speciality changed in useAudioRecorder:", speciality);
-  }, [speciality]);
-
   React.useEffect(() => {
     let isMounted = true;
 
     // Only initialize FFmpeg WASM once
     if (!ffmpegLoadedRef.current) {
       (async () => {
-        console.log("Initializing FFmpeg WASM…");
         try {
           const ok = await loadFFmpeg();
-          if (isMounted) {
-            console.log("FFmpeg init returned:", ok);
-            if (ok) {
-              console.log("FFmpeg WASM initialized successfully for audio recorder");
-            }
+          if (isMounted && ok) {
+            console.log("[SERA] FFmpeg WASM initialized");
           }
         } catch (error) {
           if (isMounted) {
-            console.error("FFmpeg WASM initialization failed:", error);
+            console.error("[SERA] FFmpeg WASM initialization failed:", error);
           }
         }
       })();
-    } else {
-      console.log("FFmpeg WASM already initialized, skipping");
     }
 
     return () => {
@@ -532,7 +489,6 @@ const useAudioRecorder = ({
         const track = audioTracks[0];
         const settings = track.getSettings();
         setCurrentDeviceId(settings.deviceId || null);
-        console.log();
       }
 
       // Clean up the test stream
@@ -540,7 +496,7 @@ const useAudioRecorder = ({
 
       return true;
     } catch (error) {
-      console.error("Microphone validation failed:", error);
+      console.error("[SERA] Microphone validation failed:", error);
 
       if (error instanceof Error) {
         let errorMessage = "";
@@ -569,10 +525,7 @@ const useAudioRecorder = ({
 
   // Initial microphone check - only when component mounts or speciality changes
   React.useEffect(() => {
-    if (speciality) {
-      // Don't validate immediately, wait for user interaction
-      console.log("Speciality set, microphone validation will happen on recording start");
-    }
+    // Don't validate immediately, wait for user interaction
   }, [speciality]);
 
   // NOTE: We no longer show retry prompt on mount - only when user stops recording after a failure
@@ -597,44 +550,21 @@ const useAudioRecorder = ({
     ) => {
       const currentFfmpegLoaded = ffmpegLoadedRef.current;
 
-      console.log("🔧 uploadChunkToServer called with:", {
-        ffmpegLoaded: currentFfmpegLoaded,
-        silenceRemovalEnabled: removeSilenceRef.current,
-        hasRemoveSilenceFunction: typeof removeSilence === "function",
-        isFinalChunk,
-        sequence,
-        audioDataLength: audioData?.length,
-        requestFormat: selectedFormatRef.current,
-        sessionHasFailed: sessionHasFailedChunkRef.current,
-      });
+      console.log(`[SERA] Step 6: Upload chunk | sequence=${sequence}, isFinal=${isFinalChunk}, samples=${audioData?.length || 0}, format=${selectedFormatRef.current}`);
 
       processorRef.current?.port.postMessage({ command: "resetUploadChunk" });
 
       // Save chunk to local session first (always save to IndexedDB regardless of failure state)
       if (audioData && localSessionIdRef.current && !retry) {
         try {
-          console.log(
-            `[DB] Saving chunk ${sequence} to IndexedDB session ${localSessionIdRef.current}`
-          );
           await appendAudioToSession(localSessionIdRef.current, audioData, sequence);
-          console.log(
-            `[DB] ✓ Successfully saved audio chunk ${sequence} to IndexedDB (${audioData.length} samples)`
-          );
         } catch (error) {
-          console.error(`[DB] ✗ Failed to save audio chunk ${sequence} to IndexedDB:`, error);
+          console.error(`[SERA] IndexedDB save failed for chunk ${sequence}:`, error);
         }
-      } else {
-        console.log(
-          `[DB] Skipping IndexedDB save: audioData=${!!audioData}, sessionId=${localSessionIdRef.current}, retry=${retry}`
-        );
       }
 
       // If a previous chunk has failed, skip server upload but continue recording
-      // Show retry UI only when user stops recording (isFinalChunk)
       if (sessionHasFailedChunkRef.current && !retry) {
-        console.log(
-          `[SKIP] Session has failed chunk - skipping server upload for sequence ${sequence}, continuing to record audio`
-        );
         if (isFinalChunk) {
           // User has stopped recording - now show the retry UI
           setShowRetrySessionPrompt(true);
@@ -661,28 +591,8 @@ const useAudioRecorder = ({
         if (!isValidSampleRate(currentSampleRate)) {
           throw new InvalidSampleRateError(currentSampleRate);
         }
-        console.log(
-          `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / currentSampleRate).toFixed(2)}s) at ${currentSampleRate}Hz`
-        );
+        console.log(`[SERA] Step 7: Audio preparation | ${audioData.length} samples, ${(audioData.length / currentSampleRate).toFixed(1)}s, ${currentSampleRate}Hz`);
 
-        // Log audio content for debugging
-        let maxAmplitude = 0;
-        let nonZeroSamples = 0;
-
-        for (let i = 0; i < audioData.length; i++) {
-          const amplitude = Math.abs(audioData[i]);
-          if (amplitude > maxAmplitude) maxAmplitude = amplitude;
-          if (amplitude > 0.001) {
-            nonZeroSamples++;
-          }
-        }
-
-        const audioPercentage = nonZeroSamples / audioData.length;
-        console.log(
-          `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
-        );
-
-        console.log(`[WAV] Converting to WAV with sample rate: ${currentSampleRate}Hz`);
         const timestamp = Date.now();
         const fileName = `audio-chunk-${timestamp}.wav`;
 
@@ -692,64 +602,30 @@ const useAudioRecorder = ({
           throw new Error("WAV conversion failed through FFmpeg");
         }
 
-        console.log(`[INFO] Original WAV file: ${wavFile.size} bytes, ${wavFile.name}`);
-
         // Apply silence removal if enabled
         if (currentFfmpegLoaded && removeSilenceRef.current) {
           try {
-            console.log("[SILENCE] Attempting to remove silence from audio chunk...");
             const processedFile = await removeSilence(wavFile);
-            if (processedFile) {
-              console.log(
-                `[SUCCESS] Silence removed successfully: ${processedFile.size} bytes (was ${wavFile.size} bytes)`
-              );
-
-              // Check if the processed file is too small (less than 1KB indicates likely over-processing)
-              if (processedFile.size < 1000) {
-                console.warn(
-                  `[WARN] Processed file very small (${processedFile.size} bytes), using original file`
-                );
-                // Use original file if processed file is suspiciously small
-              } else {
-                wavFile = processedFile;
-              }
-            } else {
-              console.warn("Silence removal returned null, using original file");
+            if (processedFile && processedFile.size >= 1000) {
+              wavFile = processedFile;
             }
           } catch (silenceError) {
-            console.warn("Silence removal failed, using original file:", silenceError);
+            console.warn("[SERA] Silence removal failed, using original file:", silenceError);
           }
-        } else {
-          console.log("[SILENCE] Silence removal disabled or not loaded");
         }
 
         // Convert WAV to FLAC for upload
         let audioFile: File = wavFile;
         try {
-          console.log("[FLAC] Converting WAV to FLAC...");
           const flacFile = await convertToFlac(wavFile);
           if (flacFile && flacFile.type === "audio/flac") {
             audioFile = flacFile;
-            console.log(
-              `[FLAC] Conversion successful: ${wavFile.size} bytes WAV → ${flacFile.size} bytes FLAC`
-            );
-          } else {
-            console.warn("[FLAC] Conversion failed, using WAV file");
           }
         } catch (flacError) {
-          console.warn("[FLAC] Conversion error, using WAV file:", flacError);
+          console.warn("[SERA] FLAC conversion failed, using WAV file:", flacError);
         }
 
-        console.log(
-          `[OUT] Final file for transcription: ${audioFile.size} bytes, ${audioFile.name}`
-        );
-
-        // Log warning for very small files but don't skip them - let server decide
-        if (audioFile.size < 500) {
-          console.warn(
-            `[WARN] Small audio file (${audioFile.size} bytes) - may contain minimal audio data, sending to server anyway`
-          );
-        }
+        console.log(`[SERA] Step 8: Audio file ready | ${audioFile.name}, ${audioFile.size} bytes`);
 
         const patientDetailsPayload = patientDetails;
 
@@ -774,14 +650,10 @@ const useAudioRecorder = ({
         switch (selectedFormatRef.current) {
           case "hl7":
             formData = createHL7TranscriptionRequest(audioFile, requestData);
-            console.log("Created HL7-formatted request");
-            console.log("HL7 FormData entries:", Array.from(formData.entries()));
             break;
 
           case "fhir":
             formData = createFHIRTranscriptionRequest(audioFile, requestData);
-            console.log("Created FHIR-formatted request");
-            console.log("FHIR FormData entries:", Array.from(formData.entries()));
             break;
 
           case "json":
@@ -808,8 +680,6 @@ const useAudioRecorder = ({
             formData.append("isPaused", isPausedChunk.toString());
             formData.append("sequence", sequence.toString());
             formData.append("speciality", speciality);
-
-            console.log("Created JSON-formatted request");
             break;
         }
 
@@ -823,7 +693,7 @@ const useAudioRecorder = ({
         // Only retry the network request - not audio preparation or response conversion
         const data = await pRetry(
           async (attemptNumber) => {
-            console.log(`🔄 Transcribe attempt ${attemptNumber} for sequence ${sequence}`);
+            console.log(`[SERA] Step 9: Sending to server | sequence=${sequence}, attempt=${attemptNumber}`);
 
             const response = await fetch(`${apiBaseUrl}/api/transcribe`, {
               method: "POST",
@@ -835,11 +705,7 @@ const useAudioRecorder = ({
             if (!response.ok) {
               const errorText = await response.text();
 
-              console.error("Transcription server error response:", {
-                status: response.status,
-                statusText: response.statusText,
-                body: errorText,
-              });
+              console.error(`[SERA] Server error | status=${response.status}, body=${errorText}`);
 
               let errorMessage = `HTTP ${response.status}`;
 
@@ -866,23 +732,20 @@ const useAudioRecorder = ({
 
             if (selectedFormatRef.current === "json") {
               responseData = await response.json();
-              console.log("Parsed JSON response:", responseData);
             } else if (selectedFormatRef.current === "hl7") {
               responseData = await response.text();
-              console.log("Received HL7 response:", responseData);
             } else if (selectedFormatRef.current === "fhir") {
               responseData = await response.json();
-              console.log("Received FHIR response:", responseData);
             } else {
               const responseText = await response.text();
               try {
                 responseData = JSON.parse(responseText);
-                console.log("Fallback: Parsed as JSON:", responseData);
               } catch {
                 responseData = responseText;
-                console.log("Fallback: Using as text:", responseData);
               }
             }
+
+            console.log(`[SERA] Step 10: Server response received | sequence=${sequence}`);
 
             return responseData;
           },
@@ -893,13 +756,7 @@ const useAudioRecorder = ({
             maxTimeout: 10000,
             randomize: true,
             onFailedAttempt: (error) => {
-              console.warn(
-                `[WARN] Transcribe attempt ${error.attemptNumber} failed for sequence ${sequence}:`,
-                {
-                  error: error,
-                  retriesLeft: error.retriesLeft,
-                }
-              );
+              console.warn(`[SERA] Attempt ${error.attemptNumber} failed for sequence ${sequence} | retriesLeft=${error.retriesLeft}`);
 
               if (error.retriesLeft > 0) {
                 setError(
@@ -912,8 +769,6 @@ const useAudioRecorder = ({
 
         // Convert response OUTSIDE of retry loop - this is a local operation
         const convertedData = convertTranscriptionResponse(data, selectedFormatRef.current);
-        console.log("Original response:", data);
-        console.log("Converted response:", convertedData);
 
         // Clear any conversion errors on success
         if (conversionError) {
@@ -928,19 +783,14 @@ const useAudioRecorder = ({
           throw new Error("No data received from transcription server");
         }
 
-        console.log(`[SUCCESS] Received transcription for sequence ${sequence}:`, convertedData);
-
         // Update server session ID when received from server
         if (retry && convertedData.sessionId) {
-          console.log(
-            "[SUCCESS] Retry successful - received new server session ID:",
-            convertedData.sessionId
-          );
           sessionIdRef.current = convertedData.sessionId;
         } else if (!retry && convertedData.sessionId && !sessionIdRef.current) {
-          console.log("[SUCCESS] Received initial server session ID:", convertedData.sessionId);
           sessionIdRef.current = convertedData.sessionId;
         }
+
+        console.log(`[SERA] Step 11: Transcription received | sequence=${sequence}, sessionId=${sessionIdRef.current}`);
 
         receivedTranscriptionsRef.current.set(sequence, convertedData.transcription);
 
@@ -953,8 +803,8 @@ const useAudioRecorder = ({
         }
 
         if (isFinalChunk) {
+          console.log(`[SERA] Step 12: Final chunk complete - transcription done | sessionId=${sessionIdRef.current}`);
           setTranscriptionDone(true);
-          // Pass the converted data to the callback
           onTranscriptionComplete(
             convertedData.transcription,
             convertedData.classifiedInfo,
@@ -968,11 +818,9 @@ const useAudioRecorder = ({
           }
         }
       } catch (err) {
-        console.error(`[ERROR] Upload error occurred after all retries:`, err);
+        console.error(`[SERA] Upload failed for sequence ${sequence}:`, err);
 
-        // Include conversion errors in error handling
         if (conversionError) {
-          console.error("Conversion error during upload:", conversionError);
           setError(`Data conversion failed: ${conversionError}`);
         }
 
@@ -990,9 +838,7 @@ const useAudioRecorder = ({
             localSessionIdRef.current,
             err instanceof Error ? err.message : "Unknown error"
           );
-          console.log(
-            `[FAIL] Chunk ${sequence} failed - session marked as failed, will continue recording audio locally`
-          );
+          console.warn(`[SERA] Chunk ${sequence} failed - continuing to record audio locally`);
 
           // Only show retry UI when user stops recording (final chunk)
           if (isFinalChunk) {
@@ -1085,20 +931,17 @@ const useAudioRecorder = ({
       if (failedSession) {
         const success = await retrySession(failedSession.id);
         if (success) {
-          console.log(`Successfully retried session ${failedSession.id}`);
-          // Delete the session from IndexedDB after successful retry
           await deleteSession(failedSession.id);
-          console.log(`Deleted session ${failedSession.id} from IndexedDB after successful retry`);
+          console.log(`[SERA] Session retry succeeded | sessionId=${failedSession.id}`);
           setError(null);
           retrySucceeded = true;
         } else {
-          // Retry failed - will show retry UI in finally block
-          console.log(`Retry failed for session ${failedSession.id} - will show retry UI`);
+          console.warn(`[SERA] Session retry failed | sessionId=${failedSession.id}`);
           setError("Retry failed. Please check your connection and try again.");
         }
       }
     } catch (error) {
-      console.error("Error retrying failed sessions:", error);
+      console.error("[SERA] Error retrying failed session:", error);
       setError("Failed to retry sessions. Please try again.");
     } finally {
       setIsRetryingSession(false);
@@ -1150,8 +993,7 @@ const useAudioRecorder = ({
         // Reset server session ID (will be set when server responds)
         sessionIdRef.current = null;
 
-        console.log("Created local session ID for IndexedDB:", localSessionId);
-        // Note: Session will be created after audio context is initialized (need sampleRate)
+        console.log(`[SERA] Step 1: New recording session created | localSessionId=${localSessionId}`);
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -1171,11 +1013,10 @@ const useAudioRecorder = ({
         const track = audioTracks[0];
         const settings = track.getSettings();
         setCurrentDeviceId(settings.deviceId || null);
-        console.log("Recording started with local session:", localSessionIdRef.current);
 
         // Monitor for device disconnection
         track.addEventListener("ended", () => {
-          console.log("Audio track ended - device disconnected");
+          console.warn("[SERA] Microphone disconnected during recording");
           setError("Microphone disconnected. Session saved - please reconnect and retry.");
           stopRecording();
         });
@@ -1212,39 +1053,27 @@ const useAudioRecorder = ({
           silentDuration,
           hasDetectedAudio,
           isInitialPhase,
-          totalRecordingTime,
-          lastAudioTime,
         } = event.data;
 
         // Handle chunk messages (increment sequence only for actual chunks)
         if (command === "finalChunk" && audioBuffer) {
           const sequence = sequenceCounterRef.current++;
           const audioArray = new Float32Array(audioBuffer);
-          console.log(`[RECEIVE] Final chunk: ${audioArray.length} samples, sequence: ${sequence}`);
+          console.log(`[SERA] Step 4: Final chunk received | sequence=${sequence}, samples=${audioArray.length}`);
           enqueueChunk(audioArray, true, sequence);
         } else if (command === "chunk" && audioBuffer) {
           const sequence = sequenceCounterRef.current++;
           const audioArray = new Float32Array(audioBuffer);
-          console.log(`[RECEIVE] Chunk: ${audioArray.length} samples, sequence: ${sequence}`);
+          console.log(`[SERA] Step 4: Chunk received | sequence=${sequence}, samples=${audioArray.length}`);
           enqueueChunk(audioArray, false, sequence);
         } else if (command === "pauseChunk" && audioBuffer) {
           const sequence = sequenceCounterRef.current++;
-          console.log(`[RECEIVE] Pause chunk with audioBuffer, sequence: ${sequence}`);
           enqueueChunk(new Float32Array(audioBuffer), false, sequence, true);
         } else if (command === "audioLevel") {
           setAudioLevel(level);
         } else if (command === "prolongedSilence") {
-          console.log(
-            `Prolonged silence detected: ${Math.round(silentDuration)}s silent, ${Math.round(
-              totalRecordingTime
-            )}s total, last audio ${Math.round(lastAudioTime)}s ago`
-          );
+          console.warn(`[SERA] Prolonged silence: ${Math.round(silentDuration)}s`);
         } else if (command === "noAudioDetected") {
-          console.log(
-            `No audio detected: ${Math.round(
-              silentDuration
-            )}s silent, hasDetectedAudio: ${hasDetectedAudio}, isInitialPhase: ${isInitialPhase}`
-          );
           setNoAudioDetected(true);
 
           let errorMessage;
@@ -1269,7 +1098,7 @@ const useAudioRecorder = ({
       audioContextRef.current = audioContext;
       // Store sample rate for use even after audioContext is closed
       recordingSampleRateRef.current = audioContext.sampleRate;
-      console.log(`[AUDIO] Recording sample rate set to: ${audioContext.sampleRate}Hz`);
+      console.log(`[SERA] Step 2: Recording started | sampleRate=${audioContext.sampleRate}Hz`);
       processorRef.current = processor;
       setIsRecording(true);
 
@@ -1278,7 +1107,7 @@ const useAudioRecorder = ({
       }, 47000);
       setUploadChunkInterval(intervalId);
     } catch (err) {
-      console.error("Recording start failed:", err);
+      console.error("[SERA] Recording start failed:", err);
       // Error handling remains the same...
     }
   }, [
@@ -1292,7 +1121,7 @@ const useAudioRecorder = ({
   ]);
 
   const stopRecording = React.useCallback(async () => {
-    console.log("Stopping recording...");
+    console.log("[SERA] Step 3: Stop recording requested");
 
     if (uploadChunkInterval) {
       clearInterval(uploadChunkInterval);
@@ -1300,7 +1129,6 @@ const useAudioRecorder = ({
     }
 
     if (processorRef.current) {
-      console.log("Stopping recording and sending final chunk --> ", isPaused ? "paused" : "final");
       processorRef.current.port.postMessage({ command: "stop" });
 
       setTimeout(async () => {
@@ -1321,13 +1149,8 @@ const useAudioRecorder = ({
 
     setIsRecording(false);
 
-    // Check if session failed during recording - if so, show retry UI
-    console.log("🔍 Stop recording - checking for failed session:", {
-      hasSessionFailed: sessionHasFailedChunkRef.current,
-      localSessionId: localSessionIdRef.current,
-    });
     if (sessionHasFailedChunkRef.current && localSessionIdRef.current) {
-      console.log("⚠️ Recording stopped with failed session - showing retry UI");
+      console.warn("[SERA] Recording stopped with failed session - showing retry UI");
       setShowRetrySessionPrompt(true);
     }
   }, [uploadChunkInterval]);
@@ -1335,7 +1158,6 @@ const useAudioRecorder = ({
   // Device change monitoring
   React.useEffect(() => {
     const handleDeviceChange = async () => {
-      console.log("Audio device change detected");
 
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
@@ -1359,7 +1181,7 @@ const useAudioRecorder = ({
           }
         }
       } catch (error) {
-        console.error("Device change detection failed:", error);
+        console.error("[SERA] Device change detection failed:", error);
         setError("Unable to detect audio devices. Please check your microphone permissions.");
       }
     };
@@ -1385,7 +1207,7 @@ const useAudioRecorder = ({
           }, 1000);
         }
       } catch (error) {
-        console.error("Device selection failed:", error);
+        console.error("[SERA] Device selection failed:", error);
         setError("Failed to switch to selected microphone.");
       }
     },
@@ -1437,9 +1259,7 @@ const useAudioRecorder = ({
     }
 
     const { chunk, isFinal, sequence, isPaused = false } = chunkQueueRef.current.shift()!;
-    console.log(
-      `[QUEUE] Processing chunk ${sequence} from queue, remaining: ${chunkQueueRef.current.length}`
-    );
+    console.log(`[SERA] Step 5: Queue processing | sequence=${sequence}, isFinal=${isFinal}, queued=${chunkQueueRef.current.length}`);
     isProcessingQueueRef.current = true;
 
     // uploadChunkToServer handles:
@@ -1459,17 +1279,10 @@ const useAudioRecorder = ({
       sequence: number,
       isPausedChunk = false
     ) => {
-      console.log(
-        `[QUEUE] Enqueuing ${isFinalChunk ? "FINAL" : isPausedChunk ? "PAUSED" : "regular"} chunk ${sequence}, samples: ${audioData?.length || 0}, queue size: ${chunkQueueRef.current.length}`
-      );
-
       if (isFinalChunk) {
         // Only set processing state if session hasn't failed
-        // If session has failed, we're just saving to IndexedDB (no server processing)
         if (!sessionHasFailedChunkRef.current) {
           setIsProcessing(true);
-        } else {
-          console.log("⚠️ Session has failed - skipping processing state (IndexedDB save only)");
         }
       }
 
