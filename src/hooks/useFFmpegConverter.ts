@@ -140,14 +140,14 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   const loadFFmpeg = useCallback(async (): Promise<boolean> => {
     // Already loaded
     if (ffmpegInstance) {
-      console.log("[FFmpeg] Already loaded, skipping");
+      console.log("[SERA] FFmpeg already loaded, skipping");
       setFfmpegLoaded(true);
       return true;
     }
 
     // If already loading, wait for that promise
     if (ffmpegLoadingPromise) {
-      console.log("[FFmpeg] Already loading, waiting for existing promise");
+      console.log("[SERA] FFmpeg already loading, waiting for existing promise");
       const result = await ffmpegLoadingPromise;
       if (result) {
         setFfmpegLoaded(true);
@@ -159,7 +159,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
     ffmpegLoadingPromise = (async () => {
       try {
         const cdnCorePath = 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js';
-        console.log("[FFmpeg] Loading from CDN:", cdnCorePath);
+        console.log(`[SERA] FFmpeg loading from CDN | corePath=${cdnCorePath}`);
         setStatusMessage("Loading FFmpeg...");
         const ffmpeg = createFFmpeg({
           log: false,
@@ -174,10 +174,10 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
         setFfmpegLoaded(true);
         setIsLoaded(true);
         setStatusMessage("");
-        console.log("[FFmpeg] WASM loaded successfully from CDN");
+        console.log("[SERA] FFmpeg WASM loaded successfully from CDN");
         return true;
       } catch (err) {
-        console.error("Failed to load FFmpeg:", err);
+        console.error("[SERA] FFmpeg loading failed:", err);
         setError("Failed to load FFmpeg");
         setStatusMessage("");
         ffmpegLoadingPromise = null; // Allow retry on failure
@@ -262,14 +262,14 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
       if (!ffmpegInstance || !ffmpegLoaded) {
         const loaded = await loadFFmpeg();
         if (!loaded) {
-          console.error("Failed to load FFmpeg for FLAC conversion");
+          console.error("[SERA] FFmpeg loading failed for FLAC conversion");
           return wavFile; // Return original WAV if FFmpeg fails to load
         }
       }
 
       const ffmpeg = ffmpegInstance;
       if (!ffmpeg) {
-        console.error("FFmpeg not available");
+        console.error("[SERA] FFmpeg not available for FLAC conversion");
         return wavFile;
       }
 
@@ -314,7 +314,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
 
         setProgress(100);
         setStatusMessage("FLAC conversion complete");
-        console.log(`[FLAC] Converted ${wavFile.size} bytes WAV to ${flacFile.size} bytes FLAC (${Math.round((1 - flacFile.size / wavFile.size) * 100)}% reduction)`);
+        console.log(`[SERA] FLAC conversion complete | inputSize=${wavFile.size}, outputSize=${flacFile.size}, reduction=${Math.round((1 - flacFile.size / wavFile.size) * 100)}%`);
 
         setTimeout(() => {
           setIsConverting(false);
@@ -324,7 +324,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
 
         return flacFile;
       } catch (err) {
-        console.error("FLAC conversion failed:", err);
+        console.error("[SERA] FLAC conversion failed:", err);
         setError("FLAC conversion failed");
         setIsConverting(false);
         setProgress(0);
@@ -345,7 +345,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
     // Check file size - 50MB limit
     const maxFileSize = 50 * 1024 * 1024; // 50MB
     if (file.size > maxFileSize) {
-      console.warn(`[SILENCE] File too large (${file.size} bytes), skipping silence removal`);
+      console.warn(`[SERA] Silence removal skipped, file too large | size=${file.size}`);
       return file;
     }
 
@@ -355,14 +355,14 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
       setProgress(0);
       setStatusMessage("Removing silence...");
 
-      console.log(`[SILENCE] Processing file: ${file.size} bytes, name: ${file.name}`);
+      console.log(`[SERA] Silence removal started | size=${file.size}, name=${file.name}`);
 
       // Ensure FFmpeg is loaded
       if (!ffmpegInstance) {
         setStatusMessage("Loading FFmpeg for silence removal...");
         const loaded = await loadFFmpeg();
         if (!loaded || !ffmpegInstance) {
-          console.error("[SILENCE] Failed to load FFmpeg");
+          console.error("[SERA] FFmpeg loading failed for silence removal");
           setIsConverting(false);
           setProgress(0);
           setStatusMessage("");
@@ -381,7 +381,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
       ffmpegInstance.FS("writeFile", inputFileName, wavData);
 
       const originalSize = file.size;
-      console.log(`[SILENCE] Input file written: ${originalSize} bytes`);
+      console.log(`[SERA] Silence removal input written | size=${originalSize}`);
 
       setProgress(30);
       setStatusMessage("Analyzing and removing silence...");
@@ -406,13 +406,13 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
         ffmpegInstance.FS("unlink", inputFileName);
         ffmpegInstance.FS("unlink", outputFileName);
       } catch (cleanupErr) {
-        console.warn("[SILENCE] Cleanup warning:", cleanupErr);
+        console.warn("[SERA] Silence removal cleanup warning:", cleanupErr);
       }
 
       const processedSize = outputData.length;
       const reductionPercent = Math.round((1 - processedSize / originalSize) * 100);
 
-      console.log(`[SILENCE] Complete: ${originalSize} bytes -> ${processedSize} bytes (${reductionPercent}% reduction)`);
+      console.log(`[SERA] Silence removal complete | inputSize=${originalSize}, outputSize=${processedSize}, reduction=${reductionPercent}%`);
 
       // Create the output file
       const processedFile = new File(
@@ -432,7 +432,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
 
       return processedFile;
     } catch (err) {
-      console.error("[SILENCE] FFmpeg silence removal failed:", err);
+      console.error("[SERA] Silence removal failed:", err);
       setError("Silence removal failed");
       setIsConverting(false);
       setProgress(0);
