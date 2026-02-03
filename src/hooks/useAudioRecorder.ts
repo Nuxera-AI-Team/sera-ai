@@ -613,20 +613,28 @@ const useAudioRecorder = ({
       // Save chunk to local session first (always save to IndexedDB regardless of failure state)
       if (audioData && localSessionIdRef.current && !retry) {
         try {
-          console.log(`[DB] Saving chunk ${sequence} to IndexedDB session ${localSessionIdRef.current}`);
+          console.log(
+            `[DB] Saving chunk ${sequence} to IndexedDB session ${localSessionIdRef.current}`
+          );
           await appendAudioToSession(localSessionIdRef.current, audioData, sequence);
-          console.log(`[DB] ✓ Successfully saved audio chunk ${sequence} to IndexedDB (${audioData.length} samples)`);
+          console.log(
+            `[DB] ✓ Successfully saved audio chunk ${sequence} to IndexedDB (${audioData.length} samples)`
+          );
         } catch (error) {
           console.error(`[DB] ✗ Failed to save audio chunk ${sequence} to IndexedDB:`, error);
         }
       } else {
-        console.log(`[DB] Skipping IndexedDB save: audioData=${!!audioData}, sessionId=${localSessionIdRef.current}, retry=${retry}`);
+        console.log(
+          `[DB] Skipping IndexedDB save: audioData=${!!audioData}, sessionId=${localSessionIdRef.current}, retry=${retry}`
+        );
       }
 
       // If a previous chunk has failed, skip server upload but continue recording
       // Show retry UI only when user stops recording (isFinalChunk)
       if (sessionHasFailedChunkRef.current && !retry) {
-        console.log(`[SKIP] Session has failed chunk - skipping server upload for sequence ${sequence}, continuing to record audio`);
+        console.log(
+          `[SKIP] Session has failed chunk - skipping server upload for sequence ${sequence}, continuing to record audio`
+        );
         if (isFinalChunk) {
           // User has stopped recording - now show the retry UI
           setShowRetrySessionPrompt(true);
@@ -635,193 +643,187 @@ const useAudioRecorder = ({
         return;
       }
 
-      // Wrap the server call in p-retry
+      // Prepare audio file ONCE outside of retry loop
+      // FFmpeg operations (WAV conversion, silence removal, FLAC encoding) should not be retried
+      // as they are local operations that will fail the same way each time
       try {
+        if (!audioData || audioData.length === 0) {
+          if (retry) {
+            throw new AbortError("No audio data provided for retry");
+          }
+          throw new Error("No audio data provided");
+        }
+
+        const currentSampleRate =
+          sampleRateOverride ??
+          recordingSampleRateRef.current ??
+          audioContextRef.current?.sampleRate;
+        if (!isValidSampleRate(currentSampleRate)) {
+          throw new InvalidSampleRateError(currentSampleRate);
+        }
+        console.log(
+          `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / currentSampleRate).toFixed(2)}s) at ${currentSampleRate}Hz`
+        );
+
+        // Log audio content for debugging
+        let maxAmplitude = 0;
+        let nonZeroSamples = 0;
+
+        for (let i = 0; i < audioData.length; i++) {
+          const amplitude = Math.abs(audioData[i]);
+          if (amplitude > maxAmplitude) maxAmplitude = amplitude;
+          if (amplitude > 0.001) {
+            nonZeroSamples++;
+          }
+        }
+
+        const audioPercentage = nonZeroSamples / audioData.length;
+        console.log(
+          `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
+        );
+
+        console.log(`[WAV] Converting to WAV with sample rate: ${currentSampleRate}Hz`);
+        const timestamp = Date.now();
+        const fileName = `audio-chunk-${timestamp}.wav`;
+
+        let wavFile: File | null = await convertToWav(audioData, currentSampleRate, fileName);
+
+        if (!wavFile) {
+          throw new Error("WAV conversion failed through FFmpeg");
+        }
+
+        console.log(`[INFO] Original WAV file: ${wavFile.size} bytes, ${wavFile.name}`);
+
+        // Apply silence removal if enabled
+        if (currentFfmpegLoaded && removeSilenceRef.current) {
+          try {
+            console.log("[SILENCE] Attempting to remove silence from audio chunk...");
+            const processedFile = await removeSilence(wavFile);
+            if (processedFile) {
+              console.log(
+                `[SUCCESS] Silence removed successfully: ${processedFile.size} bytes (was ${wavFile.size} bytes)`
+              );
+
+              // Check if the processed file is too small (less than 1KB indicates likely over-processing)
+              if (processedFile.size < 1000) {
+                console.warn(
+                  `[WARN] Processed file very small (${processedFile.size} bytes), using original file`
+                );
+                // Use original file if processed file is suspiciously small
+              } else {
+                wavFile = processedFile;
+              }
+            } else {
+              console.warn("Silence removal returned null, using original file");
+            }
+          } catch (silenceError) {
+            console.warn("Silence removal failed, using original file:", silenceError);
+          }
+        } else {
+          console.log("[SILENCE] Silence removal disabled or not loaded");
+        }
+
+        // Convert WAV to FLAC for upload
+        let audioFile: File = wavFile;
+        try {
+          console.log("[FLAC] Converting WAV to FLAC...");
+          const flacFile = await convertToFlac(wavFile);
+          if (flacFile && flacFile.type === "audio/flac") {
+            audioFile = flacFile;
+            console.log(
+              `[FLAC] Conversion successful: ${wavFile.size} bytes WAV → ${flacFile.size} bytes FLAC`
+            );
+          } else {
+            console.warn("[FLAC] Conversion failed, using WAV file");
+          }
+        } catch (flacError) {
+          console.warn("[FLAC] Conversion error, using WAV file:", flacError);
+        }
+
+        console.log(
+          `[OUT] Final file for transcription: ${audioFile.size} bytes, ${audioFile.name}`
+        );
+
+        // Log warning for very small files but don't skip them - let server decide
+        if (audioFile.size < 500) {
+          console.warn(
+            `[WARN] Small audio file (${audioFile.size} bytes) - may contain minimal audio data, sending to server anyway`
+          );
+        }
+
+        const patientDetailsPayload = patientDetails;
+
+        // Prepare request data
+        const requestData = {
+          sessionId: retry ? undefined : sessionIdRef.current || undefined,
+          model: selectedModelRef.current,
+          doctorName: doctorName,
+          patientDetails: patientDetailsPayload,
+          removeSilence: removeSilenceRef.current,
+          skipDiarization: skipDiarizationRef.current,
+          isFinalChunk: isFinalChunk,
+          isPaused: isPausedChunk,
+          sequence: sequence,
+          speciality: speciality,
+          retry: retry,
+        };
+
+        let formData: FormData;
+
+        // Create request body based on selected format
+        switch (selectedFormatRef.current) {
+          case "hl7":
+            formData = createHL7TranscriptionRequest(audioFile, requestData);
+            console.log("Created HL7-formatted request");
+            console.log("HL7 FormData entries:", Array.from(formData.entries()));
+            break;
+
+          case "fhir":
+            formData = createFHIRTranscriptionRequest(audioFile, requestData);
+            console.log("Created FHIR-formatted request");
+            console.log("FHIR FormData entries:", Array.from(formData.entries()));
+            break;
+
+          case "json":
+          default:
+            // Original JSON format
+            formData = new FormData();
+
+            if (retry) {
+              formData.append("retry", "true");
+            } else if (sessionIdRef.current) {
+              formData.append("sessionId", sessionIdRef.current);
+            }
+
+            formData.append("audio", audioFile);
+            formData.append("model", selectedModelRef.current);
+            formData.append("doctorName", doctorName);
+            if (patientHistory) formData.append("patientHistory", patientHistory);
+            if (patientDetailsPayload) {
+              formData.append("patientDetails", JSON.stringify(patientDetailsPayload));
+            }
+            formData.append("removeSilence", removeSilenceRef.current.toString());
+            formData.append("skipDiarization", skipDiarizationRef.current.toString());
+            formData.append("isFinalChunk", isFinalChunk.toString());
+            formData.append("isPaused", isPausedChunk.toString());
+            formData.append("sequence", sequence.toString());
+            formData.append("speciality", speciality);
+
+            console.log("Created JSON-formatted request");
+            break;
+        }
+
+        // Prepare headers
+        const headers: Record<string, string> = {
+          "x-api-key": effectiveApiKey || "",
+          "x-response-format": selectedFormatRef.current,
+          "x-request-format": selectedFormatRef.current,
+        };
+
+        // Only retry the network request - not audio preparation or response conversion
         const data = await pRetry(
           async (attemptNumber) => {
             console.log(`🔄 Transcribe attempt ${attemptNumber} for sequence ${sequence}`);
-
-            // Prepare audio file first
-            if (!audioData || audioData.length === 0) {
-              console.log();
-              if (retry) {
-                throw new AbortError("No audio data provided for retry");
-              }
-              throw new Error("No audio data provided");
-            }
-
-            console.log();
-
-            const currentSampleRate = sampleRateOverride ?? recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
-            if (!isValidSampleRate(currentSampleRate)) {
-              throw new InvalidSampleRateError(currentSampleRate);
-            }
-            console.log(
-              `[PROCESSING] Processing audio chunk: ${audioData.length} samples (${(audioData.length / currentSampleRate).toFixed(2)}s) at ${currentSampleRate}Hz`
-            );
-
-            // Log audio content for debugging (no longer skipping chunks)
-            let maxAmplitude = 0;
-            let nonZeroSamples = 0;
-
-            for (let i = 0; i < audioData.length; i++) {
-              const amplitude = Math.abs(audioData[i]);
-              if (amplitude > maxAmplitude) maxAmplitude = amplitude;
-              if (amplitude > 0.001) {
-                nonZeroSamples++;
-              }
-            }
-
-            const audioPercentage = nonZeroSamples / audioData.length;
-            console.log(
-              `[AUDIO] Audio stats: maxAmplitude=${maxAmplitude.toFixed(4)}, audioContent=${(audioPercentage * 100).toFixed(2)}%, sequence=${sequence}, isFinal=${isFinalChunk}`
-            );
-
-            console.log(`[WAV] Converting to WAV with sample rate: ${currentSampleRate}Hz`);
-            const timestamp = Date.now();
-            const fileName = `audio-chunk-${timestamp}.wav`;
-
-            let wavFile: File | null = await convertToWav(audioData, currentSampleRate, fileName);
-
-            if (!wavFile) {
-              throw new Error("WAV conversion failed through FFmpeg");
-            }
-
-            console.log(`[INFO] Original WAV file: ${wavFile.size} bytes, ${wavFile.name}`);
-
-            // Apply silence removal if enabled
-            if (currentFfmpegLoaded && removeSilenceRef.current) {
-              try {
-                console.log("[SILENCE] Attempting to remove silence from audio chunk...");
-                const processedFile = await removeSilence(wavFile);
-                if (processedFile) {
-                  console.log(
-                    `[SUCCESS] Silence removed successfully: ${processedFile.size} bytes (was ${wavFile.size} bytes)`
-                  );
-
-                  // Check if the processed file is too small (less than 1KB indicates likely over-processing)
-                  if (processedFile.size < 1000) {
-                    console.warn(
-                      `[WARN] Processed file very small (${processedFile.size} bytes), using original file`
-                    );
-                    // Use original file if processed file is suspiciously small
-                  } else {
-                    wavFile = processedFile;
-                  }
-                } else {
-                  console.warn("Silence removal returned null, using original file");
-                }
-              } catch (silenceError) {
-                console.warn("Silence removal failed, using original file:", silenceError);
-              }
-            } else {
-              console.log("[SILENCE] Silence removal disabled or not loaded");
-            }
-
-            // Convert WAV to FLAC for upload
-            let audioFile: File = wavFile;
-            try {
-              console.log("[FLAC] Converting WAV to FLAC...");
-              const flacFile = await convertToFlac(wavFile);
-              if (flacFile && flacFile.type === "audio/flac") {
-                audioFile = flacFile;
-                console.log(
-                  `[FLAC] Conversion successful: ${wavFile.size} bytes WAV → ${flacFile.size} bytes FLAC`
-                );
-              } else {
-                console.warn("[FLAC] Conversion failed, using WAV file");
-              }
-            } catch (flacError) {
-              console.warn("[FLAC] Conversion error, using WAV file:", flacError);
-            }
-
-            console.log(
-              `[OUT] Final file for transcription: ${audioFile.size} bytes, ${audioFile.name}`
-            );
-
-            // Log warning for very small files but don't skip them - let server decide
-            if (audioFile.size < 500) {
-              console.warn(
-                `[WARN] Small audio file (${audioFile.size} bytes) - may contain minimal audio data, sending to server anyway`
-              );
-            }
-
-            const patientDetailsPayload = patientDetails;
-
-            // Prepare request data
-            const requestData = {
-              sessionId: retry ? undefined : sessionIdRef.current || undefined,
-              model: selectedModelRef.current,
-              doctorName: doctorName,
-              patientDetails: patientDetailsPayload,
-              removeSilence: removeSilenceRef.current,
-              skipDiarization: skipDiarizationRef.current,
-              isFinalChunk: isFinalChunk,
-              isPaused: isPausedChunk,
-              sequence: sequence,
-              speciality: speciality,
-              retry: retry,
-            };
-
-            let formData: FormData;
-            let contentType: string | undefined;
-
-            // Create request body based on selected format
-            switch (selectedFormatRef.current) {
-              case "hl7":
-                formData = createHL7TranscriptionRequest(audioFile, requestData);
-                contentType = "multipart/form-data; hl7-request=true";
-                console.log("Created HL7-formatted request");
-                console.log("HL7 FormData entries:", Array.from(formData.entries()));
-                break;
-
-              case "fhir":
-                formData = createFHIRTranscriptionRequest(audioFile, requestData);
-                contentType = "multipart/form-data; fhir-request=true";
-                console.log("Created FHIR-formatted request");
-                console.log("FHIR FormData entries:", Array.from(formData.entries()));
-                break;
-
-              case "json":
-              default:
-                // Original JSON format
-                formData = new FormData();
-
-                if (retry) {
-                  formData.append("retry", "true");
-                } else if (sessionIdRef.current) {
-                  formData.append("sessionId", sessionIdRef.current);
-                }
-
-                formData.append("audio", audioFile);
-                formData.append("model", selectedModelRef.current);
-                formData.append("doctorName", doctorName);
-                if (patientHistory) formData.append("patientHistory", patientHistory);
-                if (patientDetailsPayload) {
-                  formData.append("patientDetails", JSON.stringify(patientDetailsPayload));
-                }
-                formData.append("removeSilence", removeSilenceRef.current.toString());
-                formData.append("skipDiarization", skipDiarizationRef.current.toString());
-                formData.append("isFinalChunk", isFinalChunk.toString());
-                formData.append("isPaused", isPausedChunk.toString());
-                formData.append("sequence", sequence.toString());
-                formData.append("speciality", speciality);
-
-                console.log("Created JSON-formatted request");
-                break;
-            }
-
-            // Prepare headers
-            const headers: Record<string, string> = {
-              "x-api-key": effectiveApiKey || "",
-              "x-response-format": selectedFormatRef.current,
-              "x-request-format": selectedFormatRef.current, // Add request format header
-            };
-
-            // Don't set Content-Type for FormData - let browser set it with boundary
-            // if (contentType) {
-            //   headers["Content-Type"] = contentType;
-            // }
 
             const response = await fetch(`${apiBaseUrl}/api/transcribe`, {
               method: "POST",
@@ -859,8 +861,7 @@ const useAudioRecorder = ({
               }
             }
 
-            // Handle different response formats based on Content-Type
-
+            // Parse response
             let responseData: any;
 
             if (selectedFormatRef.current === "json") {
@@ -870,7 +871,7 @@ const useAudioRecorder = ({
               responseData = await response.text();
               console.log("Received HL7 response:", responseData);
             } else if (selectedFormatRef.current === "fhir") {
-              responseData = await response.json(); // FHIR is JSON-based
+              responseData = await response.json();
               console.log("Received FHIR response:", responseData);
             } else {
               const responseText = await response.text();
@@ -883,15 +884,7 @@ const useAudioRecorder = ({
               }
             }
 
-            // Convert the response using our converter hook
-            const convertedData = convertTranscriptionResponse(
-              responseData,
-              selectedFormatRef.current
-            );
-            console.log("Original response:", responseData);
-            console.log("Converted response:", convertedData);
-
-            return convertedData;
+            return responseData;
           },
           {
             retries: 3,
@@ -917,6 +910,11 @@ const useAudioRecorder = ({
           }
         );
 
+        // Convert response OUTSIDE of retry loop - this is a local operation
+        const convertedData = convertTranscriptionResponse(data, selectedFormatRef.current);
+        console.log("Original response:", data);
+        console.log("Converted response:", convertedData);
+
         // Clear any conversion errors on success
         if (conversionError) {
           clearError();
@@ -926,25 +924,25 @@ const useAudioRecorder = ({
         if (error && error.includes("Retrying")) {
           setError(null);
         }
-        if (!data) {
+        if (!convertedData) {
           throw new Error("No data received from transcription server");
         }
 
-        console.log(`[SUCCESS] Received transcription for sequence ${sequence}:`, data);
+        console.log(`[SUCCESS] Received transcription for sequence ${sequence}:`, convertedData);
 
         // Update server session ID when received from server
-        if (retry && data.sessionId) {
+        if (retry && convertedData.sessionId) {
           console.log(
             "[SUCCESS] Retry successful - received new server session ID:",
-            data.sessionId
+            convertedData.sessionId
           );
-          sessionIdRef.current = data.sessionId;
-        } else if (!retry && data.sessionId && !sessionIdRef.current) {
-          console.log("[SUCCESS] Received initial server session ID:", data.sessionId);
-          sessionIdRef.current = data.sessionId;
+          sessionIdRef.current = convertedData.sessionId;
+        } else if (!retry && convertedData.sessionId && !sessionIdRef.current) {
+          console.log("[SUCCESS] Received initial server session ID:", convertedData.sessionId);
+          sessionIdRef.current = convertedData.sessionId;
         }
 
-        receivedTranscriptionsRef.current.set(sequence, data.transcription);
+        receivedTranscriptionsRef.current.set(sequence, convertedData.transcription);
 
         // Append in order
         while (receivedTranscriptionsRef.current.has(nextExpectedSequenceRef.current)) {
@@ -957,7 +955,11 @@ const useAudioRecorder = ({
         if (isFinalChunk) {
           setTranscriptionDone(true);
           // Pass the converted data to the callback
-          onTranscriptionComplete(data.transcription, data.classifiedInfo, sessionIdRef.current!);
+          onTranscriptionComplete(
+            convertedData.transcription,
+            convertedData.classifiedInfo,
+            sessionIdRef.current!
+          );
 
           // Clear LOCAL session only on successful final chunk + medical note generation
           if (localSessionIdRef.current) {
@@ -988,7 +990,9 @@ const useAudioRecorder = ({
             localSessionIdRef.current,
             err instanceof Error ? err.message : "Unknown error"
           );
-          console.log(`[FAIL] Chunk ${sequence} failed - session marked as failed, will continue recording audio locally`);
+          console.log(
+            `[FAIL] Chunk ${sequence} failed - session marked as failed, will continue recording audio locally`
+          );
 
           // Only show retry UI when user stops recording (final chunk)
           if (isFinalChunk) {
@@ -1197,7 +1201,7 @@ const useAudioRecorder = ({
       URL.revokeObjectURL(processorUrl);
 
       const processor = new AudioWorkletNode(audioContext, "audio-processor", {
-        processorOptions: { sampleRate: audioContext.sampleRate }
+        processorOptions: { sampleRate: audioContext.sampleRate },
       });
 
       processor.port.onmessage = (event) => {
@@ -1433,18 +1437,19 @@ const useAudioRecorder = ({
     }
 
     const { chunk, isFinal, sequence, isPaused = false } = chunkQueueRef.current.shift()!;
-    console.log(`[QUEUE] Processing chunk ${sequence} from queue, remaining: ${chunkQueueRef.current.length}`);
+    console.log(
+      `[QUEUE] Processing chunk ${sequence} from queue, remaining: ${chunkQueueRef.current.length}`
+    );
     isProcessingQueueRef.current = true;
 
     // uploadChunkToServer handles:
     // 1. Saving to IndexedDB (always, regardless of session failure state)
     // 2. Uploading to server (only if session hasn't failed)
     // 3. Marking session as failed on error
-    uploadChunkToServer(chunk, isFinal, sequence, false, isPaused)
-      .finally(() => {
-        isProcessingQueueRef.current = false;
-        processNextChunkInQueue(); // Continue processing remaining chunks
-      });
+    uploadChunkToServer(chunk, isFinal, sequence, false, isPaused).finally(() => {
+      isProcessingQueueRef.current = false;
+      processNextChunkInQueue(); // Continue processing remaining chunks
+    });
   }, [uploadChunkToServer, isLoaded]);
 
   const enqueueChunk = React.useCallback(
@@ -1454,7 +1459,9 @@ const useAudioRecorder = ({
       sequence: number,
       isPausedChunk = false
     ) => {
-      console.log(`[QUEUE] Enqueuing ${isFinalChunk ? 'FINAL' : isPausedChunk ? 'PAUSED' : 'regular'} chunk ${sequence}, samples: ${audioData?.length || 0}, queue size: ${chunkQueueRef.current.length}`);
+      console.log(
+        `[QUEUE] Enqueuing ${isFinalChunk ? "FINAL" : isPausedChunk ? "PAUSED" : "regular"} chunk ${sequence}, samples: ${audioData?.length || 0}, queue size: ${chunkQueueRef.current.length}`
+      );
 
       if (isFinalChunk) {
         // Only set processing state if session hasn't failed
