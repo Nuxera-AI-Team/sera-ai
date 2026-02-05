@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { PatientDetails } from "../types";
 
 interface TranscriptionResponse {
   transcription: string;
@@ -63,8 +64,7 @@ interface TranscriptionRequest {
   sessionId?: string;
   model: string;
   doctorName: string;
-  patientName: string;
-  patientId?: number;
+  patientDetails?: PatientDetails;
   removeSilence: boolean;
   skipDiarization: boolean;
   isFinalChunk: boolean;
@@ -208,6 +208,71 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       .replace(/\r/g, "\\X0D\\"); // Carriage return
   }, []);
 
+  const formatHL7Date = (date?: Date | string): string => {
+    if (!date) return "";
+    if (date instanceof Date && !isNaN(date.getTime())) {
+      const year = date.getFullYear().toString().padStart(4, "0");
+      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+      const day = date.getDate().toString().padStart(2, "0");
+      return `${year}${month}${day}`;
+    }
+    if (typeof date === "string") {
+      const trimmed = date.trim();
+      if (/^\\d{8}$/.test(trimmed)) return trimmed;
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        const year = parsed.getFullYear().toString().padStart(4, "0");
+        const month = (parsed.getMonth() + 1).toString().padStart(2, "0");
+        const day = parsed.getDate().toString().padStart(2, "0");
+        return `${year}${month}${day}`;
+      }
+    }
+    return "";
+  };
+
+  const formatFHIRDate = (date?: Date | string): string | undefined => {
+    if (!date) return undefined;
+    if (date instanceof Date && !isNaN(date.getTime())) {
+      const year = date.getFullYear().toString().padStart(4, "0");
+      const month = (date.getMonth() + 1).toString().padStart(2, "0");
+      const day = date.getDate().toString().padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+    if (typeof date === "string") {
+      const trimmed = date.trim();
+      if (/^\\d{4}-\\d{2}-\\d{2}$/.test(trimmed)) return trimmed;
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        const year = parsed.getFullYear().toString().padStart(4, "0");
+        const month = (parsed.getMonth() + 1).toString().padStart(2, "0");
+        const day = parsed.getDate().toString().padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+    }
+    return undefined;
+  };
+
+  const mapHL7Gender = (gender?: string): string => {
+    if (!gender) return "U";
+    const normalized = gender.toLowerCase();
+    if (normalized === "male" || normalized === "m") return "M";
+    if (normalized === "female" || normalized === "f") return "F";
+    if (normalized === "other" || normalized === "o") return "O";
+    return "U";
+  };
+
+  const mapFHIRGender = (
+    gender?: string
+  ): "male" | "female" | "other" | "unknown" | undefined => {
+    if (!gender) return undefined;
+    const normalized = gender.toLowerCase();
+    if (normalized === "male" || normalized === "m") return "male";
+    if (normalized === "female" || normalized === "f") return "female";
+    if (normalized === "other" || normalized === "o") return "other";
+    if (normalized === "unknown" || normalized === "u") return "unknown";
+    return "unknown";
+  };
+
   // Parse HL7 message into segments
   const parseHL7 = useCallback((hl7String: string): HL7Segment[] => {
     const segments: HL7Segment[] = [];
@@ -239,7 +304,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         let metadata: any = {};
         let speciality: string = "";
 
-        console.log("Parsing HL7 transcription segments:", segments);
+        console.log(`[SERA] Parsing HL7 transcription | segments=${segments.length}`);
 
         for (const segment of segments) {
           switch (segment.type) {
@@ -293,7 +358,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                     const parsedClassification = JSON.parse(classificationJson);
                     Object.assign(classifiedInfo, parsedClassification);
                   } catch (e) {
-                    console.error("Failed to parse classification JSON:", e);
+                    console.error("[SERA] Failed to parse HL7 classification JSON:", e);
                   }
                 }
               }
@@ -349,7 +414,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
           },
         };
       } catch (error) {
-        console.error("HL7 transcription conversion error:", error);
+        console.error("[SERA] HL7 transcription conversion error:", error);
         throw new Error(
           `Failed to convert HL7 transcription data: ${
             error instanceof Error ? error.message : "Unknown error"
@@ -367,7 +432,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         const segments = parseHL7(hl7Data);
         const specialities: Array<{ value: string; label: string; description: string }> = [];
 
-        console.log("Parsing HL7 specialities segments:", segments);
+        console.log(`[SERA] Parsing HL7 specialities | segments=${segments.length}`);
 
         // Track current speciality being built
         let currentSpeciality: { value: string; label: string; description: string } | null = null;
@@ -422,7 +487,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                       specialities.push(specialityData);
                     }
                   } catch (e) {
-                    console.error("Failed to parse legacy specialities JSON data:", e);
+                    console.error("[SERA] Failed to parse legacy specialities JSON data:", e);
                   }
                 }
               }
@@ -438,10 +503,10 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
           specialities.push(currentSpeciality);
         }
 
-        console.log("Parsed specialities:", specialities);
+        console.log(`[SERA] Parsed specialities | count=${specialities.length}`);
         return { specialities };
       } catch (error) {
-        console.error("HL7 specialities conversion error:", error);
+        console.error("[SERA] HL7 specialities conversion error:", error);
         throw new Error(
           `Failed to convert HL7 specialities data: ${
             error instanceof Error ? error.message : "Unknown error"
@@ -505,8 +570,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                   classification = conclusionData.classifiedInfo;
                 }
               } catch (parseError) {
-                console.error("❌ Failed to parse DiagnosticReport conclusion:", parseError);
-                console.log("Raw conclusion:", resource.conclusion);
+                console.error("[SERA] Failed to parse DiagnosticReport conclusion:", parseError);
 
                 // Fallback: store as string if parsing fails
                 if (!classification["Clinical Summary"]) {
@@ -534,17 +598,15 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
               Array.isArray(resource.section) &&
               resource.section.length > 0
             ) {
-              console.log(`📄 Processing ${resource.section.length} sections...`);
+              console.log(`[SERA] Processing FHIR Composition | sections=${resource.section.length}`);
               for (const section of resource.section) {
                 // Only extract text from "Transcription" section, not "Medical Classification"
                 if (section.title === "Transcription" && section.text?.div) {
                   const textContent = section.text.div.replace(/<[^>]*>/g, "");
                   transcription += (transcription ? "\n" : "") + textContent;
-                  console.log(`✅ Extracted transcription text (${textContent.length} chars)`);
+                  console.log(`[SERA] Extracted transcription text | chars=${textContent.length}`);
                 } else if (section.title === "Medical Classification") {
-                  console.log(
-                    "ℹ️ Skipping Medical Classification section (handled by DiagnosticReport)"
-                  );
+                  // Skipped - handled by DiagnosticReport
                 }
               }
             }
@@ -560,11 +622,8 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                 ? resource.identifier
                 : [resource.identifier];
 
-              console.log(`📋 Found ${identifiers.length} identifier(s)`);
-
               for (let j = 0; j < identifiers.length; j++) {
                 const identifier = identifiers[j];
-                console.log(`  [${j}] system: ${identifier.system}, value: ${identifier.value}`);
 
                 if (
                   identifier.system === "http://nuxera.ai/session-identifier" &&
@@ -576,13 +635,10 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
               }
             }
 
-            // 🔥 PRIORITY 2: Fallback to Composition.id if no session identifier found
+            // Fallback to Composition.id if no session identifier found
             if (!sessionId && resource.id) {
               sessionId = resource.id;
-              console.log(
-                "⚠️ [Priority 2] Using Composition.id as fallback session ID:",
-                sessionId
-              );
+              console.log(`[SERA] Using Composition.id as fallback sessionId | sessionId=${sessionId}`);
             }
             break;
 
@@ -592,10 +648,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
               for (const identifier of resource.identifier) {
                 if (identifier.system === "http://nuxera.ai/session-id" && identifier.value) {
                   sessionId = identifier.value;
-                  console.log(
-                    "✅ [Priority 3] Extracted session ID from Task.identifier:",
-                    sessionId
-                  );
+                  console.log(`[SERA] Extracted sessionId from Task.identifier | sessionId=${sessionId}`);
                   break;
                 }
               }
@@ -604,22 +657,22 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         }
       }
 
-      // 🔥 PRIORITY 4: Check Bundle.identifier only if we still don't have a session ID
+      // Fallback: Check Bundle.identifier
       if (!sessionId && fhirData.resourceType === "Bundle" && fhirData.identifier?.value) {
         sessionId = fhirData.identifier.value;
-        console.log("⚠️ [Priority 4] Using Bundle.identifier as last resort:", sessionId);
+        console.log(`[SERA] Using Bundle.identifier as fallback sessionId | sessionId=${sessionId}`);
       }
 
-      // 🔥 PRIORITY 5: Use Bundle.id as absolute last resort
+      // Fallback: Use Bundle.id
       if (!sessionId && fhirData.resourceType === "Bundle" && fhirData.id) {
         sessionId = fhirData.id;
-        console.log("⚠️ [Priority 5] Using Bundle.id as absolute last resort:", sessionId);
+        console.log(`[SERA] Using Bundle.id as fallback sessionId | sessionId=${sessionId}`);
       }
 
       // Final fallback - generate session ID if still empty
       if (!sessionId) {
         sessionId = `session_${Date.now()}`;
-        console.warn("⚠️⚠️ No session ID found in FHIR response, generated:", sessionId);
+        console.warn(`[SERA] No sessionId found in FHIR response, generated | sessionId=${sessionId}`);
       }
 
       return {
@@ -633,7 +686,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         },
       };
     } catch (error) {
-      console.error("❌ FHIR transcription conversion error:", error);
+      console.error("[SERA] FHIR transcription conversion error:", error);
       throw new Error(
         `Failed to convert FHIR transcription data: ${
           error instanceof Error ? error.message : "Unknown error"
@@ -691,7 +744,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown conversion error";
         setConversionError(errorMessage);
-        console.error("Transcription conversion failed:", error);
+        console.error("[SERA] Transcription conversion failed:", error);
 
         return {
           transcription: "Conversion failed - see raw response",
@@ -724,9 +777,14 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       );
 
       // PID - Patient Identification
-      const escapedPatientName = escapeHL7(requestData.patientName || "Unknown Patient");
+      const patientId = requestData.patientDetails?.id?.toString() || "";
+      const escapedPatientName = escapeHL7(
+        requestData.patientDetails?.name || "Unknown Patient"
+      );
+      const patientDob = formatHL7Date(requestData.patientDetails?.dateOfBirth);
+      const patientGender = mapHL7Gender(requestData.patientDetails?.gender);
       hl7Lines.push(
-        `PID|1||${requestData.patientId || ""}||${escapedPatientName}^||${timestamp}|U||||||||||${
+        `PID|1||${patientId}||${escapedPatientName}^||${patientDob}|${patientGender}||||||||||${
           requestData.userId || ""
         }|||||||||||||||`
       );
@@ -744,6 +802,12 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
           `OBX|${obxSequence++}|TX|SESSION_ID^Session Identifier||${escapeHL7(
             requestData.sessionId
           )}|||||F|||${timestamp}`
+        );
+      }
+
+      if (requestData.patientDetails?.age !== undefined) {
+        hl7Lines.push(
+          `OBX|${obxSequence++}|NM|PATIENT_AGE^Patient Age||${requestData.patientDetails.age}|||||F|||${timestamp}`
         );
       }
 
@@ -820,7 +884,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       // Join all lines with \r\n for proper HL7 format
       const hl7Message = hl7Lines.join("\r\n") + "\r\n";
 
-      console.log("Constructed HL7 Transcription Request:\n", hl7Message);
+      console.log(`[SERA] HL7 transcription request constructed | size=${hl7Message.length}`);
 
       // Create FormData with HL7 message and audio file
       const formData = new FormData();
@@ -834,7 +898,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
 
       return formData;
     },
-    [escapeHL7]
+    [escapeHL7, formatHL7Date, mapHL7Gender]
   );
 
   // Create FHIR-formatted transcription request
@@ -886,20 +950,31 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
             resource: {
               resourceType: "Patient",
               id: `${requestId}-patient`,
-              identifier: requestData.patientId
+              identifier: requestData.patientDetails?.id
                 ? [
                     {
                       system: "http://nuxera.ai/patient-id",
-                      value: requestData.patientId.toString(),
+                      value: requestData.patientDetails.id.toString(),
                     },
                   ]
                 : [],
               name: [
                 {
-                  family: requestData.patientName || "Unknown",
+                  family: requestData.patientDetails?.name || "Unknown",
                   given: ["Patient"],
                 },
               ],
+              gender: mapFHIRGender(requestData.patientDetails?.gender),
+              birthDate: formatFHIRDate(requestData.patientDetails?.dateOfBirth),
+              extension:
+                requestData.patientDetails?.age !== undefined
+                  ? [
+                      {
+                        url: "http://hl7.org/fhir/StructureDefinition/patient-age",
+                        valueUnsignedInt: requestData.patientDetails.age,
+                      },
+                    ]
+                  : undefined,
             },
           },
 
@@ -1089,10 +1164,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         }
       }
 
-      console.log(
-        "Constructed FHIR Transcription Request Bundle:",
-        JSON.stringify(fhirBundle, null, 2)
-      );
+      console.log(`[SERA] FHIR transcription request constructed | entries=${fhirBundle.entry.length}`);
 
       // Create FormData with FHIR bundle and audio file
       const formData = new FormData();
@@ -1116,14 +1188,11 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       formData.append("sequence", requestData.sequence.toString());
       formData.append("isFinalChunk", requestData.isFinalChunk.toString());
 
-      console.log(
-        "Created FHIR FormData with session ID:",
-        requestData.sessionId || "none (first call)"
-      );
+      console.log(`[SERA] FHIR FormData created | sessionId=${requestData.sessionId || "none"}`);
 
       return formData;
     },
-    []
+    [formatFHIRDate, mapFHIRGender]
   );
 
   const clearError = useCallback(() => {
@@ -1219,16 +1288,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       // Join all lines with \r\n for proper HL7 format
       const hl7Message = hl7Lines.join("\r\n") + "\r\n";
 
-      console.log("=== HL7 Dictation Request Debug ===");
-      console.log("Request Data:", requestData);
-      console.log("Audio File:", {
-        name: audioFile.name,
-        size: audioFile.size,
-        type: audioFile.type,
-      });
-      console.log("HL7 Message:");
-      console.log(hl7Message);
-      console.log("=== End Debug ===");
+      console.log(`[SERA] HL7 dictation request constructed | size=${hl7Message.length}, audioFile=${audioFile.name}, audioSize=${audioFile.size}`);
 
       // Create FormData with HL7 message and audio file
       const formData = new FormData();
@@ -1399,15 +1459,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         ],
       };
 
-      console.log("=== FHIR Dictation Request Debug ===");
-      console.log("Request Data:", requestData);
-      console.log("Audio File:", {
-        name: audioFile.name,
-        size: audioFile.size,
-        type: audioFile.type,
-      });
-      console.log("FHIR Bundle:", JSON.stringify(fhirBundle, null, 2));
-      console.log("=== End Debug ===");
+      console.log(`[SERA] FHIR dictation request constructed | entries=${fhirBundle.entry.length}, audioFile=${audioFile.name}, audioSize=${audioFile.size}`);
 
       // Create FormData with FHIR bundle and audio file
       const formData = new FormData();
@@ -1433,7 +1485,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         const segments = parseHL7(hl7Data);
         let dictationResponse: Partial<DictationResponse> = {};
 
-        console.log("Parsing HL7 dictation segments:", segments);
+        console.log(`[SERA] Parsing HL7 dictation | segments=${segments.length}`);
 
         for (const segment of segments) {
           switch (segment.type) {
@@ -1553,7 +1605,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
               );
             }
           } catch (e) {
-            console.warn("Could not calculate processing time:", e);
+            console.warn("[SERA] Could not calculate processing time:", e);
           }
         }
 
@@ -1566,10 +1618,10 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
           processingTimes: dictationResponse.processingTimes,
         };
 
-        console.log("Converted HL7 dictation response:", finalResponse);
+        console.log(`[SERA] HL7 dictation converted | sessionId=${finalResponse.sessionId}, dictationLength=${finalResponse.dictation.length}`);
         return finalResponse;
       } catch (error) {
-        console.error("HL7 dictation conversion error:", error);
+        console.error("[SERA] HL7 dictation conversion error:", error);
         throw new Error(
           `Failed to convert HL7 dictation data: ${
             error instanceof Error ? error.message : "Unknown error"
@@ -1585,27 +1637,21 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
     try {
       let dictationResponse: Partial<DictationResponse> = {};
 
-      // 🔥 PARSE JSON STRING IF NEEDED
       let parsedData = fhirData;
       if (typeof fhirData === "string") {
-        console.log("📝 Response is a string, parsing JSON...");
         try {
           parsedData = JSON.parse(fhirData);
-          console.log("✅ JSON parsed successfully");
         } catch (e) {
-          console.error("❌ Failed to parse JSON string:", e);
+          console.error("[SERA] Failed to parse FHIR dictation JSON string:", e);
           throw new Error("Invalid JSON response from server");
         }
       }
-
-      console.log("Parsing FHIR dictation data:", parsedData);
 
       // Handle different FHIR structures
       let resources: FHIRResource[] = [];
 
       if (parsedData.resourceType === "Bundle" && parsedData.entry) {
         resources = parsedData.entry.map((entry: any) => entry.resource);
-        console.log(`📦 Found ${resources.length} resources in Bundle`);
       } else if (parsedData.resourceType) {
         resources = [parsedData];
       } else if (parsedData.resource) {
@@ -1614,33 +1660,22 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
 
       for (let i = 0; i < resources.length; i++) {
         const resource = resources[i];
-        console.log(`\n--- Processing resource [${i}]: ${resource?.resourceType || "unknown"} ---`);
 
         if (!resource || !resource.resourceType) continue;
 
         switch (resource.resourceType) {
           case "MessageHeader":
-            // Extract session ID from message header
             dictationResponse.sessionId = resource.id;
-            console.log("✅ Session ID from MessageHeader:", resource.id);
             break;
 
           case "Media":
-            console.log("🎯 Found Media resource for dictation");
 
             // Extract dictation text and metadata from extension
             if (resource.extension && Array.isArray(resource.extension)) {
-              console.log(`📋 Processing ${resource.extension.length} extensions`);
-
               for (const ext of resource.extension) {
-                console.log(
-                  `  Extension URL: ${ext.url}, valueString: ${ext.valueString || ext.valueInteger}`
-                );
-
                 switch (ext.url) {
                   case "http://nuxera.ai/extensions/transcription":
                     dictationResponse.dictation = ext.valueString || "";
-                    console.log("✅✅ Extracted dictation text:", dictationResponse.dictation);
                     break;
 
                   case "http://nuxera.ai/extensions/audio-size":
@@ -1652,10 +1687,6 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                     if (sizeMatch) {
                       dictationResponse.processingTimes.audioSizeMB = parseFloat(sizeMatch[1]);
                     }
-                    console.log(
-                      "✅ Extracted audio size:",
-                      dictationResponse.processingTimes.audioSizeMB
-                    );
                     break;
 
                   case "http://nuxera.ai/extensions/processing-timestamp":
@@ -1663,7 +1694,6 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                       dictationResponse.processingTimes = {};
                     }
                     dictationResponse.processingTimes.requestTimestamp = ext.valueInteger;
-                    console.log("✅ Extracted processing timestamp:", ext.valueInteger);
                     break;
 
                   case "http://nuxera.ai/extensions/confidence":
@@ -1694,13 +1724,11 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
             // Extract session ID from Media identifier if available
             if (!dictationResponse.sessionId && resource.identifier && resource.identifier[0]) {
               dictationResponse.sessionId = resource.identifier[0].value;
-              console.log("✅ Session ID from Media.identifier:", dictationResponse.sessionId);
             }
 
             // Use Media ID as session ID if still not found
             if (!dictationResponse.sessionId && resource.id) {
               dictationResponse.sessionId = resource.id;
-              console.log("✅ Session ID from Media.id:", dictationResponse.sessionId);
             }
 
             // Extract createdDateTime as processedAt if available
@@ -1806,14 +1834,9 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
             dictationResponse.processingTimes.totalProcessingMs = Math.round(
               processedAtMs - requestMs
             );
-            console.log(
-              "✅ Calculated total processing time:",
-              dictationResponse.processingTimes.totalProcessingMs,
-              "ms"
-            );
           }
         } catch (e) {
-          console.warn("Could not calculate processing time:", e);
+          console.warn("[SERA] Could not calculate FHIR dictation processing time:", e);
         }
       }
 
@@ -1826,10 +1849,10 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         processingTimes: dictationResponse.processingTimes,
       };
 
-      console.log("✅✅ Converted FHIR dictation response:", finalResponse);
+      console.log(`[SERA] FHIR dictation converted | sessionId=${finalResponse.sessionId}, dictationLength=${finalResponse.dictation.length}`);
       return finalResponse;
     } catch (error) {
-      console.error("❌ FHIR dictation conversion error:", error);
+      console.error("[SERA] FHIR dictation conversion error:", error);
       throw new Error(
         `Failed to convert FHIR dictation data: ${
           error instanceof Error ? error.message : "Unknown error"
@@ -1875,7 +1898,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown conversion error";
         setConversionError(errorMessage);
-        console.error("Dictation conversion failed:", error);
+        console.error("[SERA] Dictation conversion failed:", error);
 
         // Return a default dictation object with error indication
         return {
@@ -2003,12 +2026,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
 
       const hl7Message = hl7Lines.join("\r\n") + "\r\n";
 
-      console.log("=== HL7 API Key Request Debug ===");
-      console.log("Operation:", operation);
-      console.log("API Key Data:", apiKeyData);
-      console.log("HL7 Message:");
-      console.log(hl7Message);
-      console.log("=== End Debug ===");
+      console.log(`[SERA] HL7 API key request constructed | operation=${operation}, size=${hl7Message.length}`);
 
       return hl7Message;
     },
@@ -2201,11 +2219,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         }
       }
 
-      console.log("=== FHIR API Key Request Debug ===");
-      console.log("Operation:", operation);
-      console.log("API Key Data:", apiKeyData);
-      console.log("FHIR Bundle:", JSON.stringify(fhirBundle, null, 2));
-      console.log("=== End Debug ===");
+      console.log(`[SERA] FHIR API key request constructed | operation=${operation}, entries=${fhirBundle.entry.length}`);
 
       return JSON.stringify(fhirBundle);
     },

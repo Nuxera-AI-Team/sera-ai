@@ -129,12 +129,17 @@ export interface AudioCaptureProps {
   /**
    * Callback function called when an audio chunk is processed
    */
-  onAudioChunk?: (audioData: Float32Array, sequence: number, isFinal: boolean) => void;
+  onAudioChunk?: (
+    audioData: Float32Array,
+    sequence: number,
+    isFinal: boolean,
+    sampleRate: number
+  ) => void;
 
   /**
    * Callback function called when recording is complete with the final audio
    */
-  onAudioComplete?: (finalAudio: Float32Array) => void;
+  onAudioComplete?: (finalAudio: Float32Array, sampleRate: number) => void;
 
   /**
    * Callback function called with the processed audio file

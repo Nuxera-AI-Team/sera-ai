@@ -53,11 +53,156 @@ function App() {
 export default App;
 ```
 
-That's it! No configuration files, no worker files to copy, no CSS frameworks to install.
+No configuration files, no worker files to copy, no CSS frameworks to install.
 
-## Audio Dictation Component
+---
 
-For shorter dictation tasks, use the `AudioDictation` component which provides push-to-talk functionality:
+## Components
+
+Sera AI ships three components, each suited to a different use case:
+
+| Component | Use Case |
+|-----------|----------|
+| [`AudioRecorder`](#audiorecorder) | Full-featured recording with live transcription, pause/resume, session recovery |
+| [`AudioDictation`](#audiodictation) | Click-to-dictate button for short dictation tasks |
+| [`AudioCapture`](#audiocapture) | Raw audio capture for custom server-side processing |
+
+---
+
+## AudioRecorder
+
+The main component for real-time audio recording with AI-powered transcription. Provides a complete UI with start/stop/pause controls, live audio visualization, session recovery prompts, and error handling.
+
+### Overview
+
+- Records audio from the user's microphone via the Web Audio API
+- Streams audio to the Sera AI cloud for real-time transcription
+- Supports medical speciality-specific transcription models
+- Automatically persists failed sessions to IndexedDB and offers retry
+- Renders an animated waveform visualizer during recording
+- Outputs results in JSON, HL7 v2.5, or FHIR R4 format
+
+### Basic Usage
+
+```tsx
+import { AudioRecorder } from 'sera-ai';
+
+function App() {
+  return (
+    <AudioRecorder
+      apiKey="your-api-key"
+      speciality="general_practice"
+      onTranscriptionUpdate={(text, sessionId) => {
+        console.log('Live transcription:', text);
+      }}
+      onTranscriptionComplete={(text, classification, sessionId) => {
+        console.log('Final result:', text);
+        console.log('Classification:', classification);
+      }}
+    />
+  );
+}
+```
+
+### Advanced Usage
+
+#### With Patient Context and HL7 Output
+
+```tsx
+<AudioRecorder
+  apiKey="your-api-key"
+  apiBaseUrl="https://your-custom-api.com"
+  speciality="cardiology"
+  patientHistory="Patient has history of atrial fibrillation"
+  patientDetails={{
+    id: 12345,
+    name: "John Doe",
+    gender: "male",
+    dateOfBirth: "1985-03-15",
+    age: 40,
+  }}
+  selectedFormat="hl7"
+  onTranscriptionUpdate={(text, sessionId) => {
+    console.log('Real-time update:', text);
+  }}
+  onTranscriptionComplete={(text, classification, sessionId) => {
+    console.log('HL7 result:', text);
+  }}
+  onSuccess={(data) => console.log('API success:', data)}
+  onError={(error) => console.error('Error:', error)}
+/>
+```
+
+#### Custom Styling
+
+```tsx
+<AudioRecorder
+  apiKey="your-api-key"
+  speciality="general_practice"
+  className="my-custom-button-class"
+  visualizerClassName="w-full max-w-2xl"
+  style={{ margin: '20px auto' }}
+/>
+```
+
+### Props Reference
+
+| Prop | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `apiKey` | `string` | **Yes** | — | Your Sera AI API key for authentication |
+| `speciality` | `string` | **Yes** | — | Medical speciality for optimized transcription (e.g. `"general_practice"`, `"cardiology"`) |
+| `apiBaseUrl` | `string` | No | `"https://nuxera.cloud"` | Base URL for the transcription API |
+| `patientHistory` | `string` | No | — | Free-text patient history to provide context for transcription |
+| `patientDetails` | [`PatientDetails`](#patientdetails) | No | — | Structured patient information |
+| `selectedFormat` | `"json" \| "hl7" \| "fhir"` | No | `"json"` | Output format for the transcription result |
+| `onTranscriptionUpdate` | `(text: string, sessionId: string) => void` | No | — | Called with live transcription text as audio is processed in real time |
+| `onTranscriptionComplete` | `(text: string, classification: ClassificationInfoResponse, sessionId: string) => void` | No | — | Called when the full transcription and medical classification are ready |
+| `onSuccess` | `(data: any) => void` | No | — | Called when the API request succeeds |
+| `onError` | `(error: string) => void` | No | — | Called when an error occurs (microphone issues, API failures, etc.) |
+| `className` | `string` | No | `""` | CSS class applied to the start recording button |
+| `visualizerClassName` | `string` | No | `""` | CSS class applied to the audio visualizer container (defaults to `max-w-lg` if empty) |
+| `style` | `React.CSSProperties` | No | — | Inline styles applied to the root container |
+
+### UI States
+
+The component automatically manages these visual states:
+
+| State | UI |
+|-------|-----|
+| **Idle** | Gradient start button with microphone icon |
+| **Recording** | Live waveform visualizer + Stop/Pause buttons |
+| **Paused** | Stop/Resume buttons (visualizer hidden) |
+| **Processing** | Teal spinner with "Processing..." label |
+| **Complete** | Green "Transcription Complete" badge |
+| **Session Recovery** | Yellow prompt offering "Retry Transcription" or "Clear Saved Sessions" |
+| **Microphone Error** | Red error panel with "Check Again" button |
+| **No Audio Detected** | Orange warning with troubleshooting checklist |
+
+### Features
+
+- **Real-time visualization** — Animated waveform with particle effects during recording
+- **Pause/Resume** — Pause recording without losing progress
+- **Session recovery** — Failed sessions are saved to IndexedDB and can be retried
+- **Auto microphone validation** — Detects missing or silent microphones on start
+- **Toast notifications** — Shows errors as temporary toast messages
+- **Dark mode support** — All error/warning panels support light and dark themes
+- **Self-contained styles** — Embeds minimal Tailwind CSS utilities; no framework required
+
+---
+
+## AudioDictation
+
+A click-to-dictate button component for short dictation tasks. Click to start recording, click again to stop — the audio is sent for transcription and the result is returned via callback.
+
+### Overview
+
+- Single-button interface: click to start, click to stop
+- Animated gradient button while recording
+- Automatic transcription on stop
+- Supports JSON, HL7, and FHIR output formats
+- Built-in error display with alert panel
+
+### Basic Usage
 
 ```tsx
 import React, { useState } from 'react';
@@ -69,7 +214,7 @@ function DictationApp() {
   return (
     <div style={{ padding: '20px' }}>
       <h1>Medical Dictation</h1>
-      
+
       <AudioDictation
         apiKey="your-api-key"
         doctorName="Dr. Smith"
@@ -80,7 +225,7 @@ function DictationApp() {
           setDictatedText(prev => prev + ' ' + text);
         }}
       />
-      
+
       <div style={{ marginTop: '20px', padding: '10px', border: '1px solid #ccc' }}>
         <h3>Dictated Text:</h3>
         <p>{dictatedText}</p>
@@ -90,130 +235,300 @@ function DictationApp() {
 }
 ```
 
-### AudioDictation Props
+### Advanced Usage
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `apiKey` | `string` | - | Your Sera AI API key |
-| `appendMode` | `boolean` | `true` | Whether to append to existing text |
-| `doctorName` | `string` | `"doctor"` | Doctor's name for the dictation |
-| `patientId` | `string` | - | Patient identifier |
-| `sessionId` | `string` | - | Session identifier |
-| `language` | `string` | `"en"` | Language code for dictation |
-| `specialty` | `string` | `"general"` | Medical specialty |
-| `selectedFormat` | `"json" \| "hl7" \| "fhir"` | `"json"` | Output format |
-| `onDictationComplete` | `(text: string) => void` | **Required** | Callback when dictation is complete |
-| `className` | `string` | - | Custom CSS classes |
-| `style` | `CSSProperties` | - | Inline styles |
-| `buttonText` | `string` | `"Hold to Dictate"` | Custom button text |
-| `placeholder` | `string` | `"Click and hold to dictate..."` | Tooltip text |
-
-### AudioDictation Features
-
-- **Push-to-talk**: Hold mouse button or spacebar to dictate
-- **Mobile support**: Touch and hold on mobile devices
-- **Visual feedback**: Button animates while recording
-- **Error handling**: Built-in error display and recovery
-- **Multiple formats**: Support for JSON, HL7, and FHIR output
-- **Real-time processing**: Immediate transcription after release
-
-## Advanced Usage
-
-### Medical Specialties
-
-The component supports various medical specialties for optimized transcription:
+#### With All Callbacks and Custom Styling
 
 ```tsx
-<AudioRecorder
-  apiKey="your-api-key"
-  speciality="cardiology" // or "emergency", "radiology", "pathology", etc.
-  patientId={123}
-  patientName="John Doe"
-/>
-```
-
-### Custom API Endpoint
-
-```tsx
-<AudioRecorder
+<AudioDictation
   apiKey="your-api-key"
   apiBaseUrl="https://your-custom-api.com"
-  speciality="general_practice"
+  appendMode={true}
+  doctorName="Dr. Garcia"
+  patientId="patient-789"
+  sessionId="session-001"
+  language="en"
+  specialty="radiology"
+  selectedFormat="fhir"
+  onDictationComplete={(text) => console.log('Dictation:', text)}
+  onDictationStart={() => console.log('Started recording')}
+  onProcessingStart={() => console.log('Processing audio...')}
+  onError={(error) => console.error('Dictation error:', error)}
+  className="my-custom-button"
+  style={{ display: 'inline-block' }}
+  buttonText="Dictate Note"
+  placeholder="Click to start dictating"
 />
 ```
 
-### Multiple Output Formats
+### Props Reference
+
+| Prop | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `apiKey` | `string` | No | — | Your Sera AI API key |
+| `apiBaseUrl` | `string` | No | — | Custom base URL for the transcription API |
+| `appendMode` | `boolean` | No | `true` | Whether to append to existing text in the transcription session |
+| `doctorName` | `string` | No | `"doctor"` | Doctor's name included in the transcription context |
+| `patientId` | `string` | No | — | Patient identifier for the dictation session |
+| `sessionId` | `string` | No | — | Session identifier for grouping dictation segments |
+| `language` | `string` | No | `"en"` | Language code for dictation |
+| `specialty` | `string` | No | `"general"` | Medical specialty for optimized transcription |
+| `selectedFormat` | `"json" \| "hl7" \| "fhir"` | No | `"json"` | Output format for the transcription result |
+| `onDictationComplete` | `(text: string) => void` | **Yes** | — | Called with the transcribed text when dictation finishes processing |
+| `onDictationStart` | `() => void` | No | — | Called when recording begins |
+| `onProcessingStart` | `() => void` | No | — | Called when recording stops and processing begins |
+| `onError` | `(error: string) => void` | No | — | Called when a dictation error occurs |
+| `className` | `string` | No | `""` | CSS class applied to the dictation button (overrides default styling) |
+| `style` | `React.CSSProperties` | No | — | Inline styles applied to the root container |
+| `buttonText` | `string` | No | — | Custom button text (button shows icons only by default) |
+| `placeholder` | `string` | No | `"Click to dictate..."` | Tooltip text shown on hover |
+
+### UI States
+
+| State | UI |
+|-------|-----|
+| **Idle** | Blue button with microphone icon |
+| **Dictating** | Animated gradient button with stop icon and pulse animation |
+| **Processing** | Gray button with spinner (disabled) |
+| **Error** | Red alert panel with error details |
+
+### Features
+
+- **Click-to-toggle** — Click to start recording, click again to stop and transcribe
+- **Visual feedback** — Animated gradient background and pulse effect while recording
+- **Lifecycle callbacks** — `onDictationStart`, `onProcessingStart`, and `onDictationComplete` for full control
+- **Error display** — Replaces button with an alert panel on errors
+- **Multiple formats** — JSON, HL7 v2.5, and FHIR R4 output
+- **Self-contained styles** — Embeds its own CSS animations and utilities
+
+---
+
+## AudioCapture
+
+A raw audio capture component for applications that handle transcription on their own servers. Records, processes, and optionally compresses audio, then returns the data via callbacks instead of sending it to the Sera AI cloud.
+
+### Overview
+
+- Captures audio from the user's microphone with configurable chunk duration
+- Returns raw `Float32Array` data or processed WAV files
+- Optional FFmpeg-based silence removal
+- Full recording controls: start, stop, pause, resume
+- Microphone device selection UI
+- Live waveform visualization
+- No API key required — audio stays on your side
+
+### Basic Usage
 
 ```tsx
-<AudioRecorder
-  apiKey="your-api-key"
-  speciality="general_practice"
-  selectedFormat="hl7" // "json", "hl7", or "fhir"
-/>
+import { AudioCapture } from 'sera-ai';
+
+function AudioCaptureApp() {
+  const handleAudioChunk = (
+    audioData: Float32Array,
+    sequence: number,
+    isFinal: boolean,
+    sampleRate: number
+  ) => {
+    console.log(`Chunk ${sequence} (${sampleRate}Hz):`, audioData.length, 'samples');
+    sendAudioToMyServer(audioData, sequence, isFinal);
+  };
+
+  const handleAudioComplete = (finalAudio: Float32Array, sampleRate: number) => {
+    console.log('Recording complete!', finalAudio.length, 'samples at', sampleRate, 'Hz');
+  };
+
+  return (
+    <AudioCapture
+      onAudioChunk={handleAudioChunk}
+      onAudioComplete={handleAudioComplete}
+      chunkDuration={30}
+      format="raw"
+    />
+  );
+}
 ```
 
-### Advanced Audio Settings
+### Advanced Usage
+
+#### WAV Output with Silence Removal and Download
 
 ```tsx
-<AudioRecorder
-  apiKey="your-api-key"
-  speciality="general_practice"
+<AudioCapture
+  onAudioFile={(audioFile) => {
+    console.log('Audio file:', audioFile.name, audioFile.size, 'bytes');
+    uploadFileToMyServer(audioFile);
+  }}
+  onAudioChunk={(audioData, sequence, isFinal, sampleRate) => {
+    console.log(`Streaming chunk ${sequence} at ${sampleRate}Hz, final=${isFinal}`);
+  }}
+  onAudioComplete={(finalAudio, sampleRate) => {
+    console.log('Complete recording:', finalAudio.length / sampleRate, 'seconds');
+  }}
   silenceRemoval={true}
-  skipDiarization={false}
-  onTranscriptionUpdate={(text, sessionId) => {
-    console.log('Real-time updates:', text);
-  }}
-  onTranscriptionComplete={(text, classification, sessionId) => {
-    console.log('Complete transcription:', text);
-    console.log('Medical classification:', classification);
-  }}
+  chunkDuration={15}
+  format="wav"
+  showDownload={true}
+  visualizerClassName="w-full max-w-2xl"
+  style={{ padding: '20px' }}
 />
 ```
 
-## Component Props
+### Props Reference
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `apiKey` | `string` | **Required** | Your Sera AI API key |
-| `apiBaseUrl` | `string` | `"https://nuxera.cloud"` | Base URL for transcription API |
-| `speciality` | `string` | **Required** | Medical speciality for optimized transcription |
-| `patientId` | `number` | - | Optional patient identifier |
-| `patientName` | `string` | - | Optional patient name |
-| `selectedFormat` | `"json" \| "hl7" \| "fhir"` | `"json"` | Output format for transcription |
-| `skipDiarization` | `boolean` | `true` | Skip speaker identification |
-| `silenceRemoval` | `boolean` | `true` | Enable automatic silence removal |
-| `onTranscriptionUpdate` | `(text: string, sessionId: string) => void` | **Required** | Real-time transcription updates |
-| `onTranscriptionComplete` | `(text: string, classification: any, sessionId: string) => void` | **Required** | Final transcription with medical classification |
-| `className` | `string` | - | Custom CSS classes |
-| `style` | `CSSProperties` | - | Inline styles |
+| Prop | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `onAudioChunk` | `(audioData: Float32Array, sequence: number, isFinal: boolean, sampleRate: number) => void` | No | — | Called for each audio chunk during recording. `sequence` is 0-indexed, `isFinal` is `true` on the last chunk |
+| `onAudioComplete` | `(finalAudio: Float32Array, sampleRate: number) => void` | No | — | Called when recording stops with the final combined audio buffer |
+| `onAudioFile` | `(audioFile: File) => void` | No | — | Called with a processed audio `File` object (raw or WAV depending on `format`) |
+| `silenceRemoval` | `boolean` | No | `false` | Enable FFmpeg-based silence detection and removal |
+| `chunkDuration` | `number` | No | `30` | Duration in seconds for each audio chunk |
+| `format` | `"raw" \| "wav"` | No | `"raw"` | Output format for the audio file provided to `onAudioFile` |
+| `showDownload` | `boolean` | No | `false` | Show a download button in the recording info bar |
+| `className` | `string` | No | `""` | CSS class applied to the start recording button |
+| `visualizerClassName` | `string` | No | `""` | CSS class applied to the visualizer container (defaults to `max-w-lg` if empty) |
+| `style` | `React.CSSProperties` | No | — | Inline styles applied to the root container |
 
-## Features in Detail
+### UI States
 
-### Real-time Audio Processing
-- Advanced noise reduction and echo cancellation
-- Automatic silence detection and removal
-- Medical-grade audio quality optimization
-- Live audio level visualization
-- Automatic microphone validation
+| State | UI |
+|-------|-----|
+| **Idle** | Purple-to-blue gradient start button with microphone icon |
+| **Recording** | Live waveform visualizer + recording info bar (duration, chunks, format) + Stop/Pause buttons |
+| **Paused** | Stop/Resume buttons (visualizer hidden), recording info bar persists |
+| **Processing / Converting** | Blue spinner with progress percentage and status message |
+| **Microphone Error** | Red error panel with "Check Again" button |
+| **No Audio Detected** | Orange warning with troubleshooting checklist |
 
-### AI Transcription
-- Medical speciality-specific models
-- Real-time streaming transcription
-- Automatic session recovery on failures
-- Support for multiple output formats (JSON, HL7, FHIR)
-- Medical terminology classification
+### Recording Info Bar
 
-### Self-contained Design
-- No external worker files to manage
-- Embedded CSS styling (no framework required)
-- All audio processing workers bundled
-- Zero configuration setup
+While recording, a status bar displays:
+- **Duration** — Current recording time in `M:SS` format
+- **Chunks** — Number of audio chunks processed so far
+- **Format** — Current output format (RAW or WAV)
+- **Silence Removal** — Indicator when enabled
+- **Download button** — Appears after recording when `showDownload` is `true`
 
-### Session Recovery
-- Automatic offline storage of audio data
-- Retry failed transcriptions
-- Resume interrupted sessions
-- Network failure resilience
+### Server Integration Example
+
+```tsx
+// Client-side: send chunks to your server
+const sendAudioToServer = async (
+  audioData: Float32Array,
+  sequence: number,
+  isFinal: boolean,
+  sampleRate: number
+) => {
+  const formData = new FormData();
+  formData.append('audio', new Blob([audioData.buffer]), 'chunk.raw');
+  formData.append('sequence', sequence.toString());
+  formData.append('isFinal', isFinal.toString());
+  formData.append('sampleRate', sampleRate.toString());
+
+  const response = await fetch('/api/process-audio', {
+    method: 'POST',
+    body: formData,
+  });
+
+  return response.json();
+};
+```
+
+```javascript
+// Server-side (Node.js example)
+app.post('/api/process-audio', upload.single('audio'), async (req, res) => {
+  try {
+    const { sequence, isFinal, sampleRate } = req.body;
+    const audioFile = req.file;
+
+    // Forward to Nuxera API or your own transcription service
+    const transcriptionResponse = await fetch('https://nuxera.cloud/v1/transcribe', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${YOUR_API_KEY}` },
+      body: createFormData(audioFile, { sequence, isFinal, sampleRate }),
+    });
+
+    const transcription = await transcriptionResponse.json();
+
+    res.json({
+      success: true,
+      transcription: transcription.text,
+      sequence: parseInt(sequence),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+```
+
+### Features
+
+- **Chunk-based streaming** — Configurable chunk duration for real-time streaming or batch processing
+- **Multiple output formats** — Raw `Float32Array` data or processed WAV files
+- **Silence removal** — Optional FFmpeg WASM-based silence detection and removal
+- **Pause/Resume** — Pause recording without losing accumulated audio
+- **Device selection** — Microphone selector dropdown when multiple devices are available
+- **Live visualization** — Animated waveform display during recording
+- **Download support** — Optional download button for the recorded audio file
+- **Audio level monitoring** — Real-time audio input level detection
+- **Self-contained** — Embeds its own styles and audio processing workers
+
+---
+
+## Shared Types
+
+### PatientDetails
+
+```typescript
+interface PatientDetails {
+  id?: number;
+  name?: string;
+  gender?: string;
+  dateOfBirth?: Date | string;
+  age?: number;
+}
+```
+
+### ClassificationInfoResponse
+
+Returned in the `onTranscriptionComplete` callback of `AudioRecorder`:
+
+```typescript
+interface ClassificationInfoResponse {
+  speciality: string;
+  generatedAt: string;
+  classifiedInfo: {
+    [sectionName: string]: string[];
+  };
+}
+```
+
+### APIResponse
+
+Generic API response wrapper:
+
+```typescript
+interface APIResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
+}
+```
+
+---
+
+## Medical Specialties Supported
+
+- `general_practice`
+- `cardiology`
+- `emergency`
+- `in_patient`
+- `radiology`
+- `pathology`
+- `surgery`
+- `pediatrics`
+- `psychiatry`
+- And more...
 
 ## Browser Requirements
 
@@ -222,203 +537,23 @@ The component supports various medical specialties for optimized transcription:
 - Microphone permissions required
 - Recommended: Chrome 88+, Firefox 85+, Safari 14+
 
-## Medical Specialties Supported
+## Exports
 
-- `general_practice`
-- `cardiology`
-- `emergency`
-- `radiology`
-- `pathology`
-- `surgery`
-- `pediatrics`
-- `psychiatry`
-- And more...
+```typescript
+// Components
+export { AudioRecorder } from 'sera-ai';
+export { AudioDictation } from 'sera-ai';
+export { AudioCapture } from 'sera-ai';
 
-## Error Handling
-
-The component includes comprehensive error handling:
-
-```tsx
-<AudioRecorder
-  apiKey="your-api-key"
-  speciality="general_practice"
-  onTranscriptionUpdate={(text, sessionId) => {
-    // Handle real-time updates
-  }}
-  onTranscriptionComplete={(text, classification, sessionId) => {
-    // Handle completion
-  }}
-  onError={(error) => {
-    console.error('Transcription error:', error);
-  }}
-/>
+// Types
+export type { AudioRecorderProps, APIResponse, APIOptions } from 'sera-ai';
+export type { AudioDictationProps } from 'sera-ai';
+export type { AudioCaptureProps } from 'sera-ai';
 ```
-
-## Audio Capture Component
-
-For applications that need to handle transcription on their own servers, use the `AudioCapture` component. This component records, processes, and compresses audio but returns the raw audio data instead of sending it for transcription.
-
-```tsx
-import React from 'react';
-import { AudioCapture } from 'sera-ai';
-
-function AudioCaptureApp() {
-  const handleAudioChunk = (audioData: Float32Array, sequence: number, isFinal: boolean) => {
-    console.log(`Audio chunk ${sequence}:`, {
-      length: audioData.length,
-      duration: audioData.length / 44100,
-      isFinal
-    });
-    
-    // Send to your own server for transcription
-    sendAudioToMyServer(audioData, sequence, isFinal);
-  };
-
-  const handleAudioComplete = (finalAudio: Float32Array) => {
-    console.log('Recording complete!', finalAudio.length);
-    // Send complete audio to your server
-    sendCompleteAudioToMyServer(finalAudio);
-  };
-
-  const handleAudioFile = (audioFile: File) => {
-    console.log('Audio file ready:', audioFile.name);
-    // Upload file to your server
-    uploadFileToMyServer(audioFile);
-  };
-
-  return (
-    <div>
-      <h1>Custom Audio Processing</h1>
-      
-      {/* Basic raw audio capture */}
-      <AudioCapture
-        onAudioChunk={handleAudioChunk}
-        onAudioComplete={handleAudioComplete}
-        chunkDuration={30}
-        format="raw"
-        showDownload={true}
-      />
-      
-      {/* Advanced capture with silence removal */}
-      <AudioCapture
-        onAudioFile={handleAudioFile}
-        silenceRemoval={true}
-        chunkDuration={15}
-        format="wav"
-        showDownload={true}
-      />
-    </div>
-  );
-}
-```
-
-### AudioCapture Props
-
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `onAudioChunk` | `(audioData: Float32Array, sequence: number, isFinal: boolean) => void` | - | Called for each audio chunk during recording |
-| `onAudioComplete` | `(finalAudio: Float32Array) => void` | - | Called when recording stops with final combined audio |
-| `onAudioFile` | `(audioFile: File) => void` | - | Called with processed audio file (raw or WAV) |
-| `silenceRemoval` | `boolean` | `false` | Enable automatic silence removal processing |
-| `chunkDuration` | `number` | `30` | Duration in seconds for each audio chunk |
-| `format` | `"raw" \| "wav"` | `"raw"` | Output format for audio file |
-| `showDownload` | `boolean` | `false` | Show download button for recorded audio |
-| `className` | `string` | - | Additional CSS class names |
-| `style` | `React.CSSProperties` | - | Custom styles |
-
-### Server Integration Example
-
-Here's how you can integrate the AudioCapture component with your own server:
-
-```tsx
-// Client-side callback
-const sendAudioToServer = async (audioData: Float32Array, sequence: number, isFinal: boolean) => {
-  // Convert Float32Array to WAV file for upload
-  const wavFile = createWavFileFromFloat32Array(audioData);
-  
-  const formData = new FormData();
-  formData.append('audio', wavFile);
-  formData.append('sequence', sequence.toString());
-  formData.append('isFinal', isFinal.toString());
-  formData.append('patientId', 'patient-123');
-  formData.append('specialty', 'cardiology');
-  
-  // Send to your server
-  const response = await fetch('/api/process-audio', {
-    method: 'POST',
-    body: formData
-  });
-  
-  const result = await response.json();
-  console.log('Server response:', result);
-};
-```
-
-```javascript
-// Server-side processing (Node.js example)
-app.post('/api/process-audio', upload.single('audio'), async (req, res) => {
-  try {
-    const { sequence, isFinal, patientId, specialty } = req.body;
-    const audioFile = req.file;
-    
-    // Forward to Nuxera API for transcription
-    const transcriptionResponse = await fetch('https://nuxera.cloud/v1/transcribe', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${YOUR_API_KEY}`
-      },
-      body: createNuxeraFormData(audioFile, { patientId, specialty, sequence, isFinal })
-    });
-    
-    const transcription = await transcriptionResponse.json();
-    
-    // Process and return results
-    res.json({
-      success: true,
-      transcription: transcription.text,
-      classification: transcription.classification,
-      sequence: parseInt(sequence)
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-```
-
-### Audio Processing Features
-
-The AudioCapture component provides the same advanced audio processing as AudioRecorder:
-
-- **Real-time audio visualization** - Live waveform display during recording
-- **Automatic silence removal** - Optional FFmpeg-based silence detection and removal
-- **Audio compression** - Optimized audio encoding for efficient transmission
-- **Chunk-based processing** - Configurable chunk duration for streaming or batch processing
-- **Multiple output formats** - Raw Float32Array data or processed WAV files
-- **Device management** - Automatic microphone detection and selection
-- **Session recovery** - Built-in error handling and retry mechanisms
-- **Audio level monitoring** - Real-time audio input level detection
-
-## Audio Controls
-
-The component provides built-in controls for:
-- Start/Stop recording
-- Pause/Resume functionality
-- Microphone device selection
-- Audio level monitoring
-- Session retry management
-
-## API Integration
-
-Works seamlessly with the Sera AI cloud platform:
-- Secure API key authentication
-- Encrypted audio transmission
-- HIPAA-compliant processing
-- Real-time streaming protocols
 
 ## Support
 
-For issues and feature requests, please visit our [GitHub repository](https://github.com/nuxera/sera-ai).
+For issues and feature requests, please visit our [GitHub repository](https://github.com/Nuxera-AI-Team/sera-ai).
 
 For API keys and enterprise support, contact [support@nuxera.com](mailto:support@nuxera.com).
 

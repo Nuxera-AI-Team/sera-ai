@@ -1,7 +1,87 @@
 import { useEffect, useRef, useState } from "react";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
+import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
 const API_BASE_URL = "https://nuxera.cloud";
+
+// Embedded Audio Processor Worker for dictation - no external files needed
+const createDictationProcessorWorker = () => {
+  const workerCode = `
+    class DictationProcessor extends AudioWorkletProcessor {
+      constructor(options) {
+        super();
+        this._buffer = [];
+        this._isStopped = false;
+        this._bufferSize = 0;
+
+        // Get sample rate from processor options or use sampleRate from AudioWorkletGlobalScope
+        this._sampleRate = options?.processorOptions?.sampleRate || sampleRate;
+
+        this.port.onmessage = (event) => {
+          if (event.data.command === "stop") {
+            this._isStopped = true;
+            this._sendFinalChunk();
+          }
+        };
+      }
+
+      _sendFinalChunk() {
+        if (this._buffer.length > 0) {
+          const flat = this._flattenBuffer();
+          this.port.postMessage({
+            command: "finalChunk",
+            audioBuffer: flat.buffer,
+            duration: this._bufferSize / this._sampleRate
+          }, [flat.buffer]);
+        } else {
+          const emptyBuffer = new Float32Array(1000);
+          this.port.postMessage({
+            command: "finalChunk",
+            audioBuffer: emptyBuffer.buffer,
+            duration: 0
+          }, [emptyBuffer.buffer]);
+        }
+        this._buffer = [];
+        this._bufferSize = 0;
+      }
+
+      _flattenBuffer() {
+        let totalLength = 0;
+        for (let i = 0; i < this._buffer.length; i++) {
+          totalLength += this._buffer[i].length;
+        }
+
+        const flat = new Float32Array(totalLength);
+        let offset = 0;
+        for (let i = 0; i < this._buffer.length; i++) {
+          flat.set(this._buffer[i], offset);
+          offset += this._buffer[i].length;
+        }
+        return flat;
+      }
+
+      process(inputs, outputs) {
+        if (this._isStopped) {
+          return true;
+        }
+
+        const input = inputs[0];
+        if (input && input.length > 0) {
+          const samples = input[0];
+          this._buffer.push(new Float32Array(samples));
+          this._bufferSize += samples.length;
+        }
+
+        return true;
+      }
+    }
+
+    registerProcessor("dictation-processor", DictationProcessor);
+  `;
+
+  const blob = new Blob([workerCode], { type: "application/javascript" });
+  return URL.createObjectURL(blob);
+};
 
 interface AudioDictationHookProps {
   onDictationComplete: (message: string) => void;
@@ -40,6 +120,8 @@ const useAudioDictation = ({
   const [isDictating, setIsDictating] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(null);
+  // Store sample rate separately so it's available even after audioContext is closed
+  const recordingSampleRateRef = useRef<number | null>(null);
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioSamplesRef = useRef<Float32Array[]>([]);
@@ -96,16 +178,23 @@ const useAudioDictation = ({
       mediaStreamRef.current = stream;
 
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      console.log("Loading audio-processor.js module...");
+
+      // Create embedded audio processor worker dynamically
+      const processorUrl = createDictationProcessorWorker();
       try {
-        await audioContext.audioWorklet.addModule("/audio-processor.js");
-        console.log("Audio worklet module loaded successfully");
+        await audioContext.audioWorklet.addModule(processorUrl);
+        console.log("Dictation audio worklet module loaded successfully");
       } catch (err) {
-        console.error("Error loading audio worklet module:", err);
+        console.error("Error loading dictation audio worklet module:", err);
         throw err;
+      } finally {
+        // Clean up the blob URL
+        URL.revokeObjectURL(processorUrl);
       }
 
-      const processor = new AudioWorkletNode(audioContext, "audio-processor");
+      const processor = new AudioWorkletNode(audioContext, "dictation-processor", {
+        processorOptions: { sampleRate: audioContext.sampleRate }
+      });
       processor.port.onmessage = (event) => {
         console.log("Received message from processor:", event.data.command);
 
@@ -152,6 +241,8 @@ const useAudioDictation = ({
       source.connect(processor);
 
       audioContextRef.current = audioContext;
+      // Store sample rate for use even after audioContext is closed
+      recordingSampleRateRef.current = audioContext.sampleRate;
       processorRef.current = processor;
 
       setIsDictating(true);
@@ -265,7 +356,10 @@ const useAudioDictation = ({
   // Move encodeWAV function (unchanged)
   const encodeWAV = (samples: Float32Array) => {
     console.log(`Encoding WAV with ${samples.length} samples`);
-    const sampleRate = audioContextRef.current?.sampleRate || 44100;
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+    if (!isValidSampleRate(sampleRate)) {
+      throw new InvalidSampleRateError(sampleRate);
+    }
     console.log(`Using sample rate: ${sampleRate}Hz`);
 
     const buffer = new ArrayBuffer(44 + samples.length * 2);

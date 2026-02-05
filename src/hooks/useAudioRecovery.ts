@@ -4,8 +4,13 @@ interface AudioSession {
   id: string;
   audioChunks: Record<number, string>; // Change from array to object
   metadata: {
-    patientId?: number;
-    patientName?: string;
+    patientDetails?: {
+      id?: number;
+      name?: string;
+      gender?: string;
+      dateOfBirth?: Date | string;
+      age?: number;
+    };
     patientHistory?: string;
     speciality: string;
     sampleRate: number; // Store original sample rate for correct WAV conversion on retry
@@ -23,8 +28,13 @@ interface AudioRecoveryHookReturn {
   createSession: (
     sessionId: string,
     metadata: {
-      patientId?: number;
-      patientName?: string;
+      patientDetails?: {
+        id?: number;
+        name?: string;
+        gender?: string;
+        dateOfBirth?: Date | string;
+        age?: number;
+      };
       patientHistory?: string;
       speciality: string;
       sampleRate: number;
@@ -59,18 +69,143 @@ const useAudioRecovery = (
   const DB_VERSION = 1;
   const MAX_RETRY_COUNT = 3;
 
+  const createAudioEncodingWorker = () => {
+    const workerCode = `
+      console.log("[SERA] Audio encoding worker loaded");
+
+      self.onmessage = function (e) {
+        const { command, data, id } = e.data;
+
+        try {
+          switch (command) {
+            case "encodeFloat32ToBase64": {
+              const { audioData } = data;
+
+              self.postMessage({
+                type: "progress",
+                id,
+                message: "Converting audio data...",
+              });
+
+              const float32Array =
+                audioData instanceof Float32Array ? audioData : new Float32Array(audioData);
+
+              console.log("[SERA] Worker encoding audio | samples=" + float32Array.length);
+
+              const buffer = new ArrayBuffer(float32Array.length * 4);
+              const view = new Float32Array(buffer);
+              view.set(float32Array);
+
+              const bytes = new Uint8Array(buffer);
+              const chunkSize = 8192;
+              let binary = "";
+
+              for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.slice(i, i + chunkSize);
+                binary += String.fromCharCode.apply(null, Array.from(chunk));
+
+                if (i % (chunkSize * 10) === 0 && i > 0) {
+                  const progress = Math.round((i / bytes.length) * 100);
+                  self.postMessage({
+                    type: "progress",
+                    id,
+                    progress,
+                    message: "Encoding... " + progress + "%",
+                  });
+                }
+              }
+
+              const base64 = btoa(binary);
+
+              self.postMessage({
+                type: "complete",
+                id,
+                result: base64,
+              });
+              break;
+            }
+
+            case "decodeBase64ToFloat32": {
+              const { base64Data } = data;
+
+              self.postMessage({
+                type: "progress",
+                id,
+                message: "Decoding audio data...",
+              });
+
+              try {
+                const binary = atob(base64Data);
+
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                  bytes[i] = binary.charCodeAt(i);
+                }
+
+                const float32Result = new Float32Array(bytes.buffer);
+
+                console.log("[SERA] Worker decoded audio | samples=" + float32Result.length);
+
+                self.postMessage({
+                  type: "complete",
+                  id,
+                  result: Array.from(float32Result),
+                });
+              } catch (decodeError) {
+                self.postMessage({
+                  type: "error",
+                  id,
+                  error: "Decode failed: " + decodeError.message,
+                });
+              }
+              break;
+            }
+
+            default:
+              self.postMessage({
+                type: "error",
+                id,
+                error: "Unknown command: " + command,
+              });
+          }
+        } catch (error) {
+          console.error("[SERA] Audio encoding worker error:", error);
+          self.postMessage({
+            type: "error",
+            id,
+            error: error.message,
+            stack: error.stack,
+          });
+        }
+      };
+
+      self.onerror = function (error) {
+        console.error("[SERA] Audio encoding worker script error:", error);
+        self.postMessage({
+          type: "error",
+          error: error.message || "Unknown worker error",
+        });
+      };
+    `;
+
+    const blob = new Blob([workerCode], { type: "application/javascript" });
+    return URL.createObjectURL(blob);
+  };
+
   // Initialize the encoding worker
   const initWorker = useCallback(() => {
     if (!workerRef.current) {
       try {
-        workerRef.current = new Worker("/audio-encoding-worker.js");
+        const workerUrl = createAudioEncodingWorker();
+        workerRef.current = new Worker(workerUrl);
+        URL.revokeObjectURL(workerUrl);
 
         workerRef.current.onmessage = (e) => {
           const { type, id, result, error, progress, message } = e.data;
           const operation = pendingOperations.current.get(id);
 
           if (!operation) {
-            console.warn(`No pending operation found for id: ${id}`);
+            console.warn(`[SERA] No pending worker operation found | id=${id}`);
             return;
           }
 
@@ -92,7 +227,7 @@ const useAudioRecovery = (
         };
 
         workerRef.current.onerror = (error) => {
-          console.error("Audio encoding worker error:", error);
+          console.error("[SERA] Audio encoding worker error:", error);
           // Reject all pending operations
           for (const [id, operation] of pendingOperations.current) {
             operation.reject(new Error("Worker crashed"));
@@ -101,9 +236,9 @@ const useAudioRecovery = (
           workerRef.current = null;
         };
 
-        console.log("🎵 Audio encoding worker initialized");
+        console.log("[SERA] Audio encoding worker initialized");
       } catch (error) {
-        console.error("Failed to initialize audio encoding worker:", error);
+        console.error("[SERA] Audio encoding worker initialization failed:", error);
         workerRef.current = null;
       }
     }
@@ -117,7 +252,7 @@ const useAudioRecovery = (
 
       if (!worker) {
         // Fallback to main thread if worker fails
-        console.warn("Worker not available, falling back to main thread encoding");
+        console.warn("[SERA] Worker not available, falling back to main thread encoding");
         return float32ArrayToBase64(audioData);
       }
 
@@ -170,7 +305,7 @@ const useAudioRecovery = (
 
       if (!worker) {
         // Fallback to main thread if worker fails
-        console.warn("Worker not available, falling back to main thread decoding");
+        console.warn("[SERA] Worker not available, falling back to main thread decoding");
         return base64ToFloat32Array(base64Data);
       }
 
@@ -226,7 +361,7 @@ const useAudioRecovery = (
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
       request.onerror = () => {
-        console.error("Failed to open IndexedDB:", request.error);
+        console.error("[SERA] Failed to open IndexedDB:", request.error);
         reject(request.error);
       };
 
@@ -277,8 +412,13 @@ const useAudioRecovery = (
     async (
       sessionId: string,
       metadata: {
-        patientId?: number;
-        patientName?: string;
+        patientDetails?: {
+          id?: number;
+          name?: string;
+          gender?: string;
+          dateOfBirth?: Date | string;
+          age?: number;
+        };
         patientHistory?: string;
         speciality: string;
         sampleRate: number;
@@ -307,17 +447,17 @@ const useAudioRecovery = (
           const request = store.add(session);
 
           request.onsuccess = () => {
-            console.log(`Created audio session ${sessionId}`);
+            console.log(`[SERA] Audio session created | sessionId=${sessionId}`);
             resolve();
           };
 
           request.onerror = () => {
-            console.error("Failed to create session:", request.error);
+            console.error("[SERA] Failed to create audio session:", request.error);
             reject(request.error);
           };
         });
       } catch (error) {
-        console.error("Error creating session:", error);
+        console.error("[SERA] Error creating audio session:", error);
         throw error;
       }
     },
@@ -371,7 +511,7 @@ const useAudioRecovery = (
           getRequest.onerror = () => reject(getRequest.error);
         });
       } catch (error) {
-        console.error(`Failed to append chunk ${sequence}:`, error);
+        console.error(`[SERA] Failed to append audio chunk | sequence=${sequence}:`, error);
       }
     },
     [initDB, encodeInWorker]
@@ -399,9 +539,7 @@ const useAudioRecovery = (
           .map(Number)
           .sort((a, b) => a - b);
 
-        console.log(
-          `Found ${chunkIndices.length} chunks with indices: ${chunkIndices.slice(0, 10)}...`
-        );
+        console.log(`[SERA] Retrying session | sessionId=${sessionId}, chunks=${chunkIndices.length}`);
 
         for (const index of chunkIndices) {
           try {
@@ -409,19 +547,19 @@ const useAudioRecovery = (
             const float32Array = await decodeInWorker(base64Data);
             audioChunks.push(float32Array);
           } catch (error) {
-            console.error(`Failed to decode chunk ${index}:`, error);
+            console.error(`[SERA] Failed to decode audio chunk | index=${index}:`, error);
           }
         }
 
         if (audioChunks.length === 0) {
-          console.error("No valid chunks found");
+          console.error("[SERA] No valid audio chunks found for retry");
           return false;
         }
 
         await reprocessSession(audioChunks, session.metadata);
         return true;
       } catch (error) {
-        console.error("Retry failed:", error);
+        console.error("[SERA] Session retry failed:", error);
         return false;
       }
     },
@@ -440,17 +578,17 @@ const useAudioRecovery = (
           const request = store.delete(sessionId);
 
           request.onsuccess = () => {
-            console.log(`Deleted completed session ${sessionId}`);
+            console.log(`[SERA] Deleted completed session | sessionId=${sessionId}`);
             resolve();
           };
 
           request.onerror = () => {
-            console.error("Failed to delete session:", request.error);
+            console.error("[SERA] Failed to delete session:", request.error);
             reject(request.error);
           };
         });
       } catch (error) {
-        console.error("Error marking session complete:", error);
+        console.error("[SERA] Error marking session complete:", error);
         throw error;
       }
     },
@@ -483,7 +621,7 @@ const useAudioRecovery = (
 
             const updateRequest = store.put(session);
             updateRequest.onsuccess = () => {
-              console.log(`Marked session ${sessionId} as failed`);
+              console.log(`[SERA] Session marked as failed | sessionId=${sessionId}`);
               resolve();
             };
             updateRequest.onerror = () => reject(updateRequest.error);
@@ -492,7 +630,7 @@ const useAudioRecovery = (
           getRequest.onerror = () => reject(getRequest.error);
         });
       } catch (error) {
-        console.error("Error marking session failed:", error);
+        console.error("[SERA] Error marking session failed:", error);
         throw error;
       }
     },
@@ -511,17 +649,17 @@ const useAudioRecovery = (
           const request = store.delete(sessionId);
 
           request.onsuccess = () => {
-            console.log(`Deleted session ${sessionId}`);
+            console.log(`[SERA] Deleted session | sessionId=${sessionId}`);
             resolve();
           };
 
           request.onerror = () => {
-            console.error("Failed to delete session:", request.error);
+            console.error("[SERA] Failed to delete session:", request.error);
             reject(request.error);
           };
         });
       } catch (error) {
-        console.error("Error deleting session:", error);
+        console.error("[SERA] Error deleting session:", error);
         throw error;
       }
     },
@@ -544,12 +682,12 @@ const useAudioRecovery = (
         };
 
         request.onerror = () => {
-          console.error("Failed to get failed sessions:", request.error);
+          console.error("[SERA] Failed to get failed sessions:", request.error);
           reject(request.error);
         };
       });
     } catch (error) {
-      console.error("Error getting failed sessions:", error);
+      console.error("[SERA] Error getting failed sessions:", error);
       return null;
     }
   }, [initDB]);
@@ -571,17 +709,17 @@ const useAudioRecovery = (
         const request = store.clear();
 
         request.onsuccess = () => {
-          console.log("Cleared all audio sessions");
+          console.log("[SERA] Cleared all audio sessions");
           resolve();
         };
 
         request.onerror = () => {
-          console.error("Failed to clear sessions:", request.error);
+          console.error("[SERA] Failed to clear sessions:", request.error);
           reject(request.error);
         };
       });
     } catch (error) {
-      console.error("Error clearing sessions:", error);
+      console.error("[SERA] Error clearing sessions:", error);
       throw error;
     }
   }, [initDB]);
@@ -589,7 +727,7 @@ const useAudioRecovery = (
   // Cleanup worker on unmount
   const cleanup = useCallback(() => {
     if (workerRef.current) {
-      console.log("🧹 Cleaning up audio encoding worker");
+      console.log("[SERA] Cleaning up audio encoding worker");
       workerRef.current.terminate();
       workerRef.current = null;
     }

@@ -119,9 +119,8 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   apiKey,
   apiBaseUrl,
   speciality,
-  patientId,
-  patientName,
   patientHistory,
+  patientDetails,
   selectedFormat = "json",
   onTranscriptionUpdate,
   onTranscriptionComplete,
@@ -164,26 +163,17 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     apiKey: apiKey,
     apiBaseUrl: apiBaseUrl,
     speciality: speciality,
-    patientName: patientName,
-    patientId: patientId,
     patientHistory: patientHistory,
+    patientDetails: patientDetails,
     selectedFormat: selectedFormat,
     onTranscriptionUpdate: (text, sessionId) => {
-      console.log("onTranscriptionUpdate called with text:", text, "sessionId:", sessionId);
+      console.log(`[SERA] Transcription update received | sessionId=${sessionId}, textLength=${text.length}`);
       if (text.length > 0) {
-        console.log("Transcription update:", text, sessionId);
         onTranscriptionUpdate && onTranscriptionUpdate(text, sessionId);
       }
     },
     onTranscriptionComplete: (text, classification, sessionId) => {
-      console.log(
-        "onTranscriptionComplete called with text:",
-        text,
-        "classification:",
-        classification,
-        "sessionId:",
-        sessionId
-      );
+      console.log(`[SERA] Transcription complete | sessionId=${sessionId}, textLength=${text.length}, hasClassification=${!!classification}`);
       onTranscriptionComplete && onTranscriptionComplete(text, classification, sessionId);
     },
   });
@@ -282,7 +272,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
 
   // Show microphone/audio errors
   if (isMicrophoneError) {
-    console.log("🔴 Showing microphone error UI");
+    console.log("[SERA] Showing microphone error UI");
     return (
       <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
         <div className="flex items-start">
@@ -299,7 +289,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
             <div className="mt-4">
               <button
                 onClick={() => {
-                  console.log("🔄 Check Again button clicked");
+                  console.log("[SERA] Microphone check again requested");
                   validateMicrophoneAccess();
                 }}
                 className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm transition-colors"

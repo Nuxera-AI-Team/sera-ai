@@ -1,9 +1,15 @@
 import React, { useState, useRef, useCallback, MutableRefObject } from "react";
 import useFFmpegConverter from "./useFFmpegConverter";
+import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
 interface AudioCaptureHookProps {
-  onAudioChunk?: (audioData: Float32Array, sequence: number, isFinal: boolean) => void;
-  onAudioComplete?: (finalAudio: Float32Array) => void;
+  onAudioChunk?: (
+    audioData: Float32Array,
+    sequence: number,
+    isFinal: boolean,
+    sampleRate: number
+  ) => void;
+  onAudioComplete?: (finalAudio: Float32Array, sampleRate: number) => void;
   onAudioFile?: (audioFile: File) => void;
   silenceRemoval?: boolean;
   chunkDuration?: number; // Duration in seconds for each chunk
@@ -43,23 +49,26 @@ interface UseAudioCaptureReturn {
 const createAudioCaptureWorker = () => {
   const workerCode = `
     class AudioCaptureProcessor extends AudioWorkletProcessor {
-      constructor() {
+      constructor(options) {
         super();
         this._buffer = [];
         this._isStopped = false;
         this._isPaused = false;
         this._chunkReady = false;
         this._processingChunk = false;
-        
+
+        // Get sample rate from processor options or use sampleRate from AudioWorkletGlobalScope
+        this._sampleRate = options?.processorOptions?.sampleRate || sampleRate;
+
         this._audioLevelCheckInterval = 0;
         this._audioLevelCheckFrequency = 128;
         this._silentSampleCount = 0;
-        this._maxSilentSamples = 44100 * 30;
+        this._maxSilentSamples = this._sampleRate * 30;
         this._audioThreshold = 0.002;
         this._hasDetectedAudio = false;
         this._lastAudioTime = 0;
         this._recordingStartTime = Date.now();
-        this._initialSilenceThreshold = 44100 * 10;
+        this._initialSilenceThreshold = this._sampleRate * 10;
         this._isInitialPhase = true;
         this._bufferSize = 0;
 
@@ -96,7 +105,7 @@ const createAudioCaptureWorker = () => {
           this.port.postMessage({
             command: "finalChunk",
             audioBuffer: flat.buffer,
-            duration: this._bufferSize / 44100
+            duration: this._bufferSize / this._sampleRate
           }, [flat.buffer]);
         } else {
           // Send empty final chunk
@@ -177,12 +186,12 @@ const createAudioCaptureWorker = () => {
           // Send chunk if ready
           if (this._chunkReady && !this._processingChunk) {
             this._processingChunk = true;
-            
+
             const flat = this._flattenBuffer();
             this.port.postMessage({
               command: "chunk",
               audioBuffer: flat.buffer,
-              duration: this._bufferSize / 44100,
+              duration: this._bufferSize / this._sampleRate,
               hasActivity: audioLevel > this._audioThreshold
             }, [flat.buffer]);
             
@@ -226,6 +235,8 @@ const useAudioCapture = ({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  // Store sample rate separately so it's available even after audioContext is closed
+  const recordingSampleRateRef = useRef<number | null>(null);
   const chunkIntervalRef = useRef<number | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
   const durationIntervalRef = useRef<number | null>(null);
@@ -333,7 +344,12 @@ const useAudioCapture = ({
 
       // Call chunk callback
       if (onAudioChunk) {
-        onAudioChunk(processedAudio, sequence, isFinal);
+        const sampleRate =
+          recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+        if (!isValidSampleRate(sampleRate)) {
+          throw new InvalidSampleRateError(sampleRate);
+        }
+        onAudioChunk(processedAudio, sequence, isFinal, sampleRate);
       }
 
       // If final chunk, combine all audio and call completion callbacks
@@ -350,7 +366,12 @@ const useAudioCapture = ({
 
         // Call completion callback with raw audio
         if (onAudioComplete) {
-          onAudioComplete(finalAudio);
+          const sampleRate =
+            recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+          if (!isValidSampleRate(sampleRate)) {
+            throw new InvalidSampleRateError(sampleRate);
+          }
+          onAudioComplete(finalAudio, sampleRate);
         }
 
         // Convert to file format if requested
@@ -376,9 +397,13 @@ const useAudioCapture = ({
 
   // Create WAV file from Float32Array
   const createWavFile = useCallback(async (samples: Float32Array): Promise<File> => {
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+    if (!isValidSampleRate(sampleRate)) {
+      throw new InvalidSampleRateError(sampleRate);
+    }
     if (isLoaded && typeof convertToWav === "function") {
       // Use FFmpeg for better quality conversion
-      const result = await convertToWav(samples);
+      const result = await convertToWav(samples, sampleRate);
       return result || float32ToWavFile(samples); // Fallback if conversion fails
     } else {
       // Fallback to manual WAV creation
@@ -405,7 +430,10 @@ const useAudioCapture = ({
 
   // Manual WAV file creation
   const float32ToWavFile = (samples: Float32Array): File => {
-    const sampleRate = audioContextRef.current?.sampleRate || 44100;
+    const sampleRate = recordingSampleRateRef.current ?? audioContextRef.current?.sampleRate;
+    if (!isValidSampleRate(sampleRate)) {
+      throw new InvalidSampleRateError(sampleRate);
+    }
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
 
@@ -480,7 +508,9 @@ const useAudioCapture = ({
       await audioContext.audioWorklet.addModule(processorUrl);
       URL.revokeObjectURL(processorUrl);
 
-      const processor = new AudioWorkletNode(audioContext, "audio-capture-processor");
+      const processor = new AudioWorkletNode(audioContext, "audio-capture-processor", {
+        processorOptions: { sampleRate: audioContext.sampleRate }
+      });
 
       processor.port.onmessage = (event) => {
         if (event.data.command === "chunk") {
@@ -504,6 +534,8 @@ const useAudioCapture = ({
       source.connect(processor);
 
       audioContextRef.current = audioContext;
+      // Store sample rate for use even after audioContext is closed
+      recordingSampleRateRef.current = audioContext.sampleRate;
       processorRef.current = processor;
       setIsRecording(true);
 
