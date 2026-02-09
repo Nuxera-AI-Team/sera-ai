@@ -1,20 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import useAudioRecorder from '../hooks/useAudioRecorder';
-import { mockMediaDevices, MockMediaStream } from './setup';
+import { mockMediaDevices, MockMediaStream, mockFetch } from './setup';
+
+// Hoisted mock functions so they can be asserted on in tests
+const mockFFmpegFns = vi.hoisted(() => ({
+  removeSilence: vi.fn((file: File) => Promise.resolve(file)),
+  loadFFmpeg: vi.fn(() => Promise.resolve(true)),
+  convertToWav: vi.fn((_audioData: Float32Array, _sampleRate: number, fileName: string) =>
+    Promise.resolve(new File(['mock-wav'], fileName, { type: 'audio/wav' }))
+  ),
+  convertToFlac: vi.fn((_wavFile: File) =>
+    Promise.resolve(new File(['mock-flac'], 'audio.flac', { type: 'audio/flac' }))
+  ),
+}));
 
 // Mock the dependent hooks
 vi.mock('../hooks/useFFmpegConverter', () => ({
   default: () => ({
-    removeSilence: vi.fn((file) => Promise.resolve(file)),
+    removeSilence: mockFFmpegFns.removeSilence,
     isLoaded: true,
+    ffmpegLoaded: true,
     isConverting: false,
-    loadFFmpeg: vi.fn(() => Promise.resolve(true)),
+    loadFFmpeg: mockFFmpegFns.loadFFmpeg,
     progress: 0,
     statusMessage: '',
-    convertToWav: vi.fn((audioData, sampleRate, fileName) =>
-      Promise.resolve(new File(['mock'], fileName, { type: 'audio/wav' }))
-    ),
+    convertToWav: mockFFmpegFns.convertToWav,
+    convertToFlac: mockFFmpegFns.convertToFlac,
   }),
 }));
 
@@ -346,6 +358,7 @@ describe('useAudioRecorder', () => {
       expect(result.current.isRetryingSession).toBe(false);
       expect(result.current.isConverting).toBe(false);
       expect(result.current.progress).toBe(0);
+      expect(result.current.statusMessage).toBe('');
     });
 
     it('should expose all expected methods', () => {
@@ -478,6 +491,495 @@ describe('useAudioRecorder', () => {
       });
 
       expect(result.current.showRetrySessionPrompt).toBe(false);
+    });
+  });
+
+  describe('patientDetails prop', () => {
+    it('should accept patientDetails with all fields', () => {
+      const propsWithDetails = {
+        ...defaultProps,
+        patientDetails: {
+          id: 123,
+          name: 'John Doe',
+          gender: 'male',
+          dateOfBirth: '1990-01-01',
+          age: 36,
+        },
+      };
+
+      const { result } = renderHook(() => useAudioRecorder(propsWithDetails));
+
+      // Hook should initialize without errors
+      expect(result.current.error).toBeNull();
+      expect(result.current.isRecording).toBe(false);
+    });
+
+    it('should accept patientDetails with partial fields', () => {
+      const propsWithPartialDetails = {
+        ...defaultProps,
+        patientDetails: {
+          name: 'Jane Doe',
+        },
+      };
+
+      const { result } = renderHook(() => useAudioRecorder(propsWithPartialDetails));
+
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should work without patientDetails (optional)', () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      expect(result.current.error).toBeNull();
+      expect(result.current.isRecording).toBe(false);
+    });
+
+    it('should accept patientHistory alongside patientDetails', () => {
+      const propsWithBoth = {
+        ...defaultProps,
+        patientHistory: 'Previous visit for routine checkup',
+        patientDetails: {
+          id: 456,
+          name: 'Test Patient',
+        },
+      };
+
+      const { result } = renderHook(() => useAudioRecorder(propsWithBoth));
+
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe('startRecording', () => {
+    it('should validate microphone access before starting', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      expect(mockMediaDevices.enumerateDevices).toHaveBeenCalled();
+      expect(mockMediaDevices.getUserMedia).toHaveBeenCalled();
+    });
+
+    it('should not start recording when microphone validation fails', async () => {
+      mockMediaDevices.enumerateDevices.mockResolvedValue([]);
+
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(false);
+      expect(result.current.error).toContain('No microphone');
+    });
+
+    it('should not start recording when getUserMedia permission is denied', async () => {
+      const permError = new Error('Permission denied');
+      permError.name = 'NotAllowedError';
+      mockMediaDevices.getUserMedia.mockRejectedValue(permError);
+
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(false);
+      expect(result.current.error).toContain('Microphone access denied');
+    });
+
+    it('should clear previous errors when starting a new recording', async () => {
+      // First cause an error
+      mockMediaDevices.enumerateDevices.mockResolvedValue([]);
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      expect(result.current.error).not.toBeNull();
+
+      // Restore mocks and try again
+      mockMediaDevices.enumerateDevices.mockResolvedValue([
+        {
+          deviceId: 'mock-device-id',
+          kind: 'audioinput',
+          label: 'Mock Microphone',
+          groupId: 'mock-group-id',
+          toJSON: () => ({}),
+        },
+      ]);
+      mockMediaDevices.getUserMedia.mockResolvedValue(new MockMediaStream());
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      // Error should be cleared at the start of startRecording
+      // (even if recording setup fails later, the initial clear should happen)
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should request audio with correct constraints', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      // getUserMedia is called twice: once for validation, once for recording
+      const calls = mockMediaDevices.getUserMedia.mock.calls;
+      const recordingCall = calls[calls.length - 1];
+
+      expect(recordingCall[0]).toEqual(
+        expect.objectContaining({
+          audio: expect.objectContaining({
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }),
+        })
+      );
+    });
+
+    it('should use selected device ID when one is set', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      // First select a device
+      await act(async () => {
+        await result.current.selectMicrophone('specific-device-id');
+      });
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      // The recording getUserMedia call should include the specific device
+      const calls = mockMediaDevices.getUserMedia.mock.calls;
+      const recordingCall = calls[calls.length - 1];
+
+      expect(recordingCall[0].audio).toEqual(
+        expect.objectContaining({
+          deviceId: { exact: 'specific-device-id' },
+        })
+      );
+    });
+  });
+
+  describe('stopRecording', () => {
+    it('should set isRecording to false', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      // Start recording first
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      await act(async () => {
+        result.current.stopRecording();
+      });
+
+      expect(result.current.isRecording).toBe(false);
+    });
+
+    it('should be callable when not recording without error', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      expect(result.current.isRecording).toBe(false);
+
+      await act(async () => {
+        result.current.stopRecording();
+      });
+
+      expect(result.current.isRecording).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe('selectedFormat prop', () => {
+    it('should accept json format', () => {
+      const props = { ...defaultProps, selectedFormat: 'json' as const };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should accept hl7 format', () => {
+      const props = { ...defaultProps, selectedFormat: 'hl7' as const };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should accept fhir format', () => {
+      const props = { ...defaultProps, selectedFormat: 'fhir' as const };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should default to json format when not specified', () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      // Hook should work fine with default format
+      expect(result.current.error).toBeNull();
+      expect(result.current.isRecording).toBe(false);
+    });
+  });
+
+  describe('optional props', () => {
+    it('should accept skipDiarization option', () => {
+      const props = { ...defaultProps, skipDiarization: false };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should accept silenceRemoval option', () => {
+      const props = { ...defaultProps, silenceRemoval: false };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should accept custom apiBaseUrl', () => {
+      const props = { ...defaultProps, apiBaseUrl: 'https://custom-api.example.com' };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe('audio processing pipeline', () => {
+    let capturedProcessor: {
+      port: { postMessage: ReturnType<typeof vi.fn>; onmessage: ((event: { data: Record<string, unknown> }) => void) | null };
+      connect: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
+    } | null;
+    let OriginalAudioWorkletNode: typeof globalThis.AudioWorkletNode;
+
+    beforeEach(() => {
+      capturedProcessor = null;
+      OriginalAudioWorkletNode = globalThis.AudioWorkletNode;
+
+      // Override AudioWorkletNode to capture the instance created during startRecording
+      (globalThis as any).AudioWorkletNode = class {
+        port = {
+          postMessage: vi.fn(),
+          onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
+        };
+        connect = vi.fn();
+        disconnect = vi.fn();
+        constructor() {
+          // eslint-disable-next-line @typescript-eslint/no-this-alias
+          capturedProcessor = this;
+        }
+      };
+    });
+
+    afterEach(() => {
+      (globalThis as any).AudioWorkletNode = OriginalAudioWorkletNode;
+    });
+
+    it('should apply silence removal and convert to FLAC when silenceRemoval is enabled', async () => {
+      const props = { ...defaultProps, silenceRemoval: true };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      // Start recording to set up the audio processing pipeline
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(true);
+      expect(capturedProcessor).not.toBeNull();
+      expect(capturedProcessor!.port.onmessage).not.toBeNull();
+
+      // Clear mock call history from any initialization calls
+      mockFFmpegFns.convertToWav.mockClear();
+      mockFFmpegFns.removeSilence.mockClear();
+      mockFFmpegFns.convertToFlac.mockClear();
+      mockFetch.mockClear();
+
+      // Simulate an audio chunk arriving from the worklet
+      const audioData = new Float32Array([0.5, 0.3, 0.1, 0.4, 0.2]);
+      act(() => {
+        capturedProcessor!.port.onmessage!({
+          data: {
+            command: 'chunk',
+            audioBuffer: audioData.buffer,
+          },
+        });
+      });
+
+      // Wait for the async processing pipeline to complete
+      await waitFor(() => {
+        expect(mockFFmpegFns.convertToWav).toHaveBeenCalledTimes(1);
+      });
+
+      await waitFor(() => {
+        expect(mockFFmpegFns.removeSilence).toHaveBeenCalledTimes(1);
+      });
+
+      await waitFor(() => {
+        expect(mockFFmpegFns.convertToFlac).toHaveBeenCalledTimes(1);
+      });
+
+      // Verify the processing order: WAV was passed to removeSilence
+      const wavFile = await mockFFmpegFns.convertToWav.mock.results[0].value;
+      expect(mockFFmpegFns.removeSilence).toHaveBeenCalledWith(wavFile);
+
+      // Verify fetch was called (audio was sent to server)
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('should skip silence removal but still convert to FLAC when silenceRemoval is disabled', async () => {
+      const props = { ...defaultProps, silenceRemoval: false };
+      const { result } = renderHook(() => useAudioRecorder(props));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(true);
+
+      mockFFmpegFns.convertToWav.mockClear();
+      mockFFmpegFns.removeSilence.mockClear();
+      mockFFmpegFns.convertToFlac.mockClear();
+      mockFetch.mockClear();
+
+      const audioData = new Float32Array([0.5, 0.3, 0.1, 0.4, 0.2]);
+      act(() => {
+        capturedProcessor!.port.onmessage!({
+          data: {
+            command: 'chunk',
+            audioBuffer: audioData.buffer,
+          },
+        });
+      });
+
+      // WAV conversion and FLAC conversion should still happen
+      await waitFor(() => {
+        expect(mockFFmpegFns.convertToWav).toHaveBeenCalledTimes(1);
+      });
+
+      await waitFor(() => {
+        expect(mockFFmpegFns.convertToFlac).toHaveBeenCalledTimes(1);
+      });
+
+      // Silence removal should NOT have been called
+      expect(mockFFmpegFns.removeSilence).not.toHaveBeenCalled();
+
+      // Fetch should still be called
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('should use correct sample rate from AudioContext for WAV conversion', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      mockFFmpegFns.convertToWav.mockClear();
+
+      const audioData = new Float32Array([0.5, 0.3, 0.1]);
+      act(() => {
+        capturedProcessor!.port.onmessage!({
+          data: {
+            command: 'chunk',
+            audioBuffer: audioData.buffer,
+          },
+        });
+      });
+
+      await waitFor(() => {
+        expect(mockFFmpegFns.convertToWav).toHaveBeenCalledTimes(1);
+      });
+
+      // MockAudioContext.sampleRate is 44100
+      const callArgs = mockFFmpegFns.convertToWav.mock.calls[0];
+      expect(callArgs[1]).toBe(44100);
+    });
+
+    it('should send the FLAC file to the server via fetch', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      mockFFmpegFns.convertToWav.mockClear();
+      mockFFmpegFns.convertToFlac.mockClear();
+      mockFetch.mockClear();
+
+      const audioData = new Float32Array([0.5, 0.3, 0.1]);
+      act(() => {
+        capturedProcessor!.port.onmessage!({
+          data: {
+            command: 'chunk',
+            audioBuffer: audioData.buffer,
+          },
+        });
+      });
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      // Verify the fetch was called with the transcribe endpoint
+      const fetchCall = mockFetch.mock.calls[0];
+      expect(fetchCall[0]).toContain('/api/transcribe');
+
+      // Verify it sent a FormData body
+      const fetchOptions = fetchCall[1];
+      expect(fetchOptions.method).toBe('POST');
+      expect(fetchOptions.body).toBeInstanceOf(FormData);
+
+      // Verify the FormData contains the audio file
+      const formData = fetchOptions.body as FormData;
+      const audioFile = formData.get('audio') as File;
+      expect(audioFile).not.toBeNull();
+      expect(audioFile.type).toBe('audio/flac');
+    });
+
+    it('should fall back to WAV when FLAC conversion fails', async () => {
+      // Make FLAC conversion fail
+      mockFFmpegFns.convertToFlac.mockRejectedValueOnce(new Error('FLAC conversion failed'));
+
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        result.current.startRecording();
+      });
+
+      mockFFmpegFns.convertToWav.mockClear();
+      mockFetch.mockClear();
+
+      const audioData = new Float32Array([0.5, 0.3, 0.1]);
+      act(() => {
+        capturedProcessor!.port.onmessage!({
+          data: {
+            command: 'chunk',
+            audioBuffer: audioData.buffer,
+          },
+        });
+      });
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      // Should still send the request, but with the WAV file as fallback
+      const formData = mockFetch.mock.calls[0][1].body as FormData;
+      const audioFile = formData.get('audio') as File;
+      expect(audioFile).not.toBeNull();
+      expect(audioFile.type).toBe('audio/wav');
     });
   });
 });
