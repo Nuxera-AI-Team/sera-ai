@@ -118,14 +118,35 @@ class MockWorker {
   terminate() {}
 }
 
+// Type for the reprocessSession callback
+type ReprocessSessionFn = (
+  audioChunks: Float32Array[],
+  metadata: {
+    patientDetails?: {
+      id?: number;
+      name?: string;
+      gender?: string;
+      dateOfBirth?: Date | string;
+      age?: number;
+    };
+    patientHistory?: string;
+    speciality: string;
+    sampleRate: number;
+    timestamp: number;
+    totalChunks: number;
+    completedChunks: number;
+    chunkIndices: number[];
+  }
+) => Promise<void>;
+
 describe('useAudioRecovery', () => {
-  let mockReprocessSession: ReturnType<typeof vi.fn>;
+  const mockReprocessSession = vi.fn<ReprocessSessionFn>(() => Promise.resolve());
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockStoreData = new Map();
     mockDB = createMockDB();
-    mockReprocessSession = vi.fn(() => Promise.resolve());
+    mockReprocessSession.mockClear();
 
     // Mock indexedDB
     Object.defineProperty(globalThis, 'indexedDB', {

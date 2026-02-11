@@ -397,7 +397,8 @@ describe('useAudioCapture', () => {
         await result.current.startRecording();
       });
 
-      const calls = mockMediaDevices.getUserMedia.mock.calls;
+      const calls = mockMediaDevices.getUserMedia.mock.calls as unknown as Array<[{ audio: Record<string, unknown> }]>;
+      expect(calls.length).toBeGreaterThan(0);
       const recordingCall = calls[calls.length - 1];
 
       expect(recordingCall[0].audio).toEqual(

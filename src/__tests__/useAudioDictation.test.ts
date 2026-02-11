@@ -57,7 +57,7 @@ describe('useAudioDictation', () => {
     mockMediaDevices.getUserMedia.mockResolvedValue(new MockMediaStream());
 
     // Reset fetch mock with dictation response
-    mockFetch.mockImplementation(() =>
+    (mockFetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
       Promise.resolve({
         ok: true,
         status: 200,

@@ -630,7 +630,7 @@ describe('useAudioRecorder', () => {
       });
 
       // getUserMedia is called twice: once for validation, once for recording
-      const calls = mockMediaDevices.getUserMedia.mock.calls;
+      const calls = mockMediaDevices.getUserMedia.mock.calls as unknown as Array<[Record<string, unknown>]>;
       const recordingCall = calls[calls.length - 1];
 
       expect(recordingCall[0]).toEqual(
@@ -657,7 +657,7 @@ describe('useAudioRecorder', () => {
       });
 
       // The recording getUserMedia call should include the specific device
-      const calls = mockMediaDevices.getUserMedia.mock.calls;
+      const calls = mockMediaDevices.getUserMedia.mock.calls as unknown as Array<[{ audio: Record<string, unknown> }]>;
       const recordingCall = calls[calls.length - 1];
 
       expect(recordingCall[0].audio).toEqual(
@@ -933,7 +933,8 @@ describe('useAudioRecorder', () => {
       });
 
       // Verify the fetch was called with the transcribe endpoint
-      const fetchCall = mockFetch.mock.calls[0];
+      const fetchCalls = mockFetch.mock.calls as unknown as Array<[string, { method: string; body: FormData }]>;
+      const fetchCall = fetchCalls[0];
       expect(fetchCall[0]).toContain('/api/transcribe');
 
       // Verify it sent a FormData body
@@ -976,7 +977,8 @@ describe('useAudioRecorder', () => {
       });
 
       // Should still send the request, but with the WAV file as fallback
-      const formData = mockFetch.mock.calls[0][1].body as FormData;
+      const fetchCalls = mockFetch.mock.calls as unknown as Array<[string, { method: string; body: FormData }]>;
+      const formData = fetchCalls[0][1].body as FormData;
       const audioFile = formData.get('audio') as File;
       expect(audioFile).not.toBeNull();
       expect(audioFile.type).toBe('audio/wav');
