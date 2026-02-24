@@ -121,6 +121,7 @@ interface UseFFmpegConverterReturn {
     fileName?: string
   ) => Promise<File | null>;
   convertToFlac: (wavFile: File) => Promise<File | null>;
+  convertToOpus: (wavFile: File) => Promise<File | null>;
   removeSilence: (file: File) => Promise<File | null>;
   reset: () => void;
 }
@@ -335,6 +336,79 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
     [ffmpegLoaded, loadFFmpeg]
   );
 
+  const convertToOpus = useCallback(
+    async (wavFile: File): Promise<File | null> => {
+      if (!ffmpegInstance || !ffmpegLoaded) {
+        const loaded = await loadFFmpeg();
+        if (!loaded) {
+          console.error("[SERA] FFmpeg loading failed for Opus conversion");
+          return wavFile;
+        }
+      }
+
+      const ffmpeg = ffmpegInstance;
+      if (!ffmpeg) {
+        console.error("[SERA] FFmpeg not available for Opus conversion");
+        return wavFile;
+      }
+
+      try {
+        setIsConverting(true);
+        setProgress(0);
+        setError(null);
+        setStatusMessage("Converting to Opus...");
+
+        const inputFileName = "input.wav";
+        const outputFileName = "output.opus";
+
+        const wavData = await fetchFile(wavFile);
+        ffmpeg.FS("writeFile", inputFileName, wavData);
+
+        setProgress(30);
+        setStatusMessage("Encoding Opus...");
+
+        await ffmpeg.run(
+          "-i", inputFileName,
+          "-c:a", "libopus",
+          "-b:a", "64k",
+          outputFileName
+        );
+
+        setProgress(80);
+        setStatusMessage("Finalizing...");
+
+        const opusData = ffmpeg.FS("readFile", outputFileName);
+
+        ffmpeg.FS("unlink", inputFileName);
+        ffmpeg.FS("unlink", outputFileName);
+
+        const opusBlob = new Blob([new Uint8Array(opusData)], { type: "audio/opus" });
+        const opusFileName = wavFile.name.replace(/\.wav$/i, ".opus");
+        const opusFile = new File([opusBlob], opusFileName, { type: "audio/opus" });
+
+        setProgress(100);
+        setStatusMessage("Opus conversion complete");
+        console.log(`[SERA] Opus conversion complete | inputSize=${wavFile.size}, outputSize=${opusFile.size}, reduction=${Math.round((1 - opusFile.size / wavFile.size) * 100)}%`);
+
+        setTimeout(() => {
+          setIsConverting(false);
+          setProgress(0);
+          setStatusMessage("");
+        }, 500);
+
+        return opusFile;
+      } catch (err) {
+        console.error("[SERA] Opus conversion failed:", err);
+        setError("Opus conversion failed");
+        setIsConverting(false);
+        setProgress(0);
+        setStatusMessage("");
+        return wavFile;
+      }
+    },
+    [ffmpegLoaded, loadFFmpeg]
+  );
+
   const removeSilence = useCallback(async (file: File): Promise<File | null> => {
     // Validate input file
     if (!file) {
@@ -459,6 +533,7 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
     loadFFmpeg,
     convertToWav,
     convertToFlac,
+    convertToOpus,
     removeSilence,
     reset,
   };

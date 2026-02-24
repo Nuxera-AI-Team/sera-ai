@@ -316,6 +316,7 @@ const TestApp = () => {
               dateOfBirth: "11/02/1999",
               age: 26,
             }}
+            compressionType="opus"
             onTranscriptionComplete={(text, classification, sessionId) => {
               console.log("Custom API transcription:", text);
               setTranscriptionResult(text);

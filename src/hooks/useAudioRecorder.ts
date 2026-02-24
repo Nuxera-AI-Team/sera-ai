@@ -15,6 +15,7 @@ interface AudioRecorderHookProps {
   selectedFormat?: "json" | "hl7" | "fhir";
   skipDiarization?: boolean;
   silenceRemoval?: boolean;
+  compressionType?: "flac" | "opus";
   onTranscriptionUpdate: (text: string, sessionId: string) => void;
   onTranscriptionComplete: (
     text: string,
@@ -258,6 +259,7 @@ const useAudioRecorder = ({
   selectedFormat = "json",
   skipDiarization = true,
   silenceRemoval = true,
+  compressionType = "flac",
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
@@ -394,6 +396,7 @@ const useAudioRecorder = ({
   const selectedModelRef = React.useRef(selectedModel);
   const skipDiarizationRef = React.useRef(skipDiarization);
   const removeSilenceRef = React.useRef(silenceRemoval);
+  const compressionTypeRef = React.useRef(compressionType);
   const selectedFormatRef = React.useRef(selectedFormat);
 
   const {
@@ -406,6 +409,7 @@ const useAudioRecorder = ({
     statusMessage,
     convertToWav,
     convertToFlac,
+    convertToOpus,
   } = useFFmpegConverter();
 
   // Add ref to track the current ffmpegLoaded value (for WASM loading state)
@@ -427,6 +431,10 @@ const useAudioRecorder = ({
   React.useEffect(() => {
     removeSilenceRef.current = silenceRemoval;
   }, [silenceRemoval]);
+
+  React.useEffect(() => {
+    compressionTypeRef.current = compressionType;
+  }, [compressionType]);
 
   React.useEffect(() => {
     selectedFormatRef.current = selectedFormat;
@@ -615,15 +623,22 @@ const useAudioRecorder = ({
           }
         }
 
-        // Convert WAV to FLAC for upload
+        // Convert WAV to compressed format for upload
         let audioFile: File = wavFile;
         try {
-          const flacFile = await convertToFlac(wavFile);
-          if (flacFile && flacFile.type === "audio/flac") {
-            audioFile = flacFile;
+          if (compressionTypeRef.current === "opus") {
+            const opusFile = await convertToOpus(wavFile);
+            if (opusFile && opusFile.type === "audio/opus") {
+              audioFile = opusFile;
+            }
+          } else {
+            const flacFile = await convertToFlac(wavFile);
+            if (flacFile && flacFile.type === "audio/flac") {
+              audioFile = flacFile;
+            }
           }
-        } catch (flacError) {
-          console.warn("[SERA] FLAC conversion failed, using WAV file:", flacError);
+        } catch (conversionError) {
+          console.warn("[SERA] Audio compression failed, using WAV file:", conversionError);
         }
 
         console.log(`[SERA] Step 8: Audio file ready | ${audioFile.name}, ${audioFile.size} bytes`);

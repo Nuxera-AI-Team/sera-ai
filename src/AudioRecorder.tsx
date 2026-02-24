@@ -122,6 +122,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   patientHistory,
   patientDetails,
   selectedFormat = "json",
+  compressionType = "flac",
   onTranscriptionUpdate,
   onTranscriptionComplete,
   onSuccess,
@@ -166,6 +167,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     patientHistory: patientHistory,
     patientDetails: patientDetails,
     selectedFormat: selectedFormat,
+    compressionType: compressionType,
     onTranscriptionUpdate: (text, sessionId) => {
       console.log(`[SERA] Transcription update received | sessionId=${sessionId}, textLength=${text.length}`);
       if (text.length > 0) {

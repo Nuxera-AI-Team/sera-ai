@@ -41,6 +41,13 @@ export interface AudioRecorderProps {
   selectedFormat?: "json" | "hl7" | "fhir";
 
   /**
+   * Compression format used when uploading audio (optional, defaults to "flac")
+   * - "flac": FLAC lossless compression
+   * - "opus": Opus lossy compression (smaller files)
+   */
+  compressionType?: "flac" | "opus";
+
+  /**
    * Callback function called on transcription updates (optional)
    */
   onTranscriptionUpdate?: (text: string, sessionId: string) => void;
