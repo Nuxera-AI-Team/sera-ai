@@ -283,6 +283,7 @@ const useAudioRecorder = ({
   const recordingSampleRateRef = React.useRef<number | null>(null);
   const sessionIdRef = React.useRef<string | null>(null); // This will be server session ID
   const localSessionIdRef = React.useRef<string | null>(null); // This will be our IndexedDB session ID
+  const wakeLockRef = React.useRef<WakeLockSentinel | null>(null);
 
   const doctorName = "asad";
 
@@ -1102,6 +1103,13 @@ const useAudioRecorder = ({
       processorRef.current = processor;
       setIsRecording(true);
 
+      // Prevent screen from sleeping during recording
+      if ("wakeLock" in navigator) {
+        navigator.wakeLock.request("screen").then((lock) => {
+          wakeLockRef.current = lock;
+        }).catch(() => { /* non-critical, ignore silently */ });
+      }
+
       const intervalId = window.setInterval(() => {
         processorRef.current?.port.postMessage({ command: "uploadChunk" });
       }, 47000);
@@ -1149,11 +1157,34 @@ const useAudioRecorder = ({
 
     setIsRecording(false);
 
+    // Release wake lock when recording stops
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().catch(() => {});
+      wakeLockRef.current = null;
+    }
+
     if (sessionHasFailedChunkRef.current && localSessionIdRef.current) {
       console.warn("[SERA] Recording stopped with failed session - showing retry UI");
       setShowRetrySessionPrompt(true);
     }
   }, [uploadChunkInterval]);
+
+  // Reacquire wake lock if the page becomes visible again while still recording
+  // (browsers automatically release wake locks when a page is hidden)
+  React.useEffect(() => {
+    if (!("wakeLock" in navigator)) return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && isRecording && !wakeLockRef.current) {
+        navigator.wakeLock.request("screen").then((lock) => {
+          wakeLockRef.current = lock;
+        }).catch(() => {});
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [isRecording]);
 
   // Device change monitoring
   React.useEffect(() => {
