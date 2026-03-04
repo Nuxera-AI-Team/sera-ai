@@ -206,12 +206,8 @@ const useAudioDictation = ({
         if (event.data.command === "finalChunk") {
           console.log("Received final chunk");
 
-          if (event.data.audioBuffer) {
-            // Add the final chunk to our samples
-            audioSamplesRef.current.push(new Float32Array(event.data.audioBuffer));
-          }
-
           // Combine all samples into a single buffer
+          // Note: the audio buffer was already pushed above by the generic audioBuffer check
           const totalLength = audioSamplesRef.current.reduce(
             (acc, buffer) => acc + buffer.length,
             0
