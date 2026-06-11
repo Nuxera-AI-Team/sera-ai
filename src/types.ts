@@ -23,6 +23,11 @@ export interface AudioRecorderProps {
   apiBaseUrl?: string;
 
   /**
+   * Encounter ID to associate the transcription with a specific encounter (optional)
+   */
+  encounterId?: string;
+
+  /**
    * Patient history information (optional)
    */
   patientHistory?: string;

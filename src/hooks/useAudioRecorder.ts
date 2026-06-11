@@ -10,6 +10,7 @@ interface AudioRecorderHookProps {
   apiKey: string;
   apiBaseUrl?: string;
   speciality: string;
+  encounterId?: string;
   patientHistory?: string;
   patientDetails?: PatientDetails;
   selectedFormat?: "json" | "hl7" | "fhir";
@@ -253,6 +254,7 @@ const useAudioRecorder = ({
   apiKey,
   apiBaseUrl = API_BASE_URL,
   speciality,
+  encounterId,
   patientHistory,
   patientDetails,
   selectedFormat = "json",
@@ -635,6 +637,7 @@ const useAudioRecorder = ({
           sessionId: retry ? undefined : sessionIdRef.current || undefined,
           model: selectedModelRef.current,
           doctorName: doctorName,
+          encounterId: encounterId,
           patientDetails: patientDetailsPayload,
           removeSilence: removeSilenceRef.current,
           skipDiarization: skipDiarizationRef.current,
@@ -671,6 +674,7 @@ const useAudioRecorder = ({
             formData.append("audio", audioFile);
             formData.append("model", selectedModelRef.current);
             formData.append("doctorName", doctorName);
+            if (encounterId) formData.append("encounterId", encounterId);
             if (patientHistory) formData.append("patientHistory", patientHistory);
             if (patientDetailsPayload) {
               formData.append("patientDetails", JSON.stringify(patientDetailsPayload));

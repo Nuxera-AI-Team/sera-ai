@@ -64,6 +64,7 @@ interface TranscriptionRequest {
   sessionId?: string;
   model: string;
   doctorName: string;
+  encounterId?: string;
   patientDetails?: PatientDetails;
   removeSilence: boolean;
   skipDiarization: boolean;
@@ -805,6 +806,14 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         );
       }
 
+      if (requestData.encounterId) {
+        hl7Lines.push(
+          `OBX|${obxSequence++}|TX|ENCOUNTER_ID^Encounter Identifier||${escapeHL7(
+            requestData.encounterId
+          )}|||||F|||${timestamp}`
+        );
+      }
+
       if (requestData.patientDetails?.age !== undefined) {
         hl7Lines.push(
           `OBX|${obxSequence++}|NM|PATIENT_AGE^Patient Age||${requestData.patientDetails.age}|||||F|||${timestamp}`
@@ -1182,6 +1191,10 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       // This ensures the server receives numeric session IDs in the expected location
       if (requestData.sessionId) {
         formData.append("sessionId", requestData.sessionId);
+      }
+
+      if (requestData.encounterId) {
+        formData.append("encounterId", requestData.encounterId);
       }
 
       // Add other critical fields to FormData for easier server-side parsing
