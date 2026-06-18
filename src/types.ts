@@ -30,7 +30,7 @@ export interface AudioRecorderProps {
   /**
    * Template ID to use for shaping the transcription output (optional)
    */
-  templateId?: string;
+  template?: string;
 
   /**
    * Patient history information (optional)
