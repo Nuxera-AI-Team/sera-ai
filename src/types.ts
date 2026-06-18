@@ -28,6 +28,11 @@ export interface AudioRecorderProps {
   encounterId?: string;
 
   /**
+   * Template ID to use for shaping the transcription output (optional)
+   */
+  templateId?: string;
+
+  /**
    * Patient history information (optional)
    */
   patientHistory?: string;

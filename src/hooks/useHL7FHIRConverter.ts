@@ -65,6 +65,7 @@ interface TranscriptionRequest {
   model: string;
   doctorName: string;
   encounterId?: string;
+  templateId?: string;
   patientDetails?: PatientDetails;
   removeSilence: boolean;
   skipDiarization: boolean;
@@ -814,6 +815,14 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         );
       }
 
+      if (requestData.templateId) {
+        hl7Lines.push(
+          `OBX|${obxSequence++}|TX|TEMPLATE_ID^Template Identifier||${escapeHL7(
+            requestData.templateId
+          )}|||||F|||${timestamp}`
+        );
+      }
+
       if (requestData.patientDetails?.age !== undefined) {
         hl7Lines.push(
           `OBX|${obxSequence++}|NM|PATIENT_AGE^Patient Age||${requestData.patientDetails.age}|||||F|||${timestamp}`
@@ -1195,6 +1204,10 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
 
       if (requestData.encounterId) {
         formData.append("encounterId", requestData.encounterId);
+      }
+
+      if (requestData.templateId) {
+        formData.append("templateId", requestData.templateId);
       }
 
       // Add other critical fields to FormData for easier server-side parsing
