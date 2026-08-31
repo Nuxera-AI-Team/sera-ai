@@ -5,8 +5,13 @@ import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
 import { ClassificationInfoResponse, PatientDetails } from "../types";
 import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
+import {
+  postTranscribeV2Chunk,
+  postMedicalNote,
+  combineLabeledTranscripts,
+} from "../lib/transcribeV2";
 
-interface AudioRecorderHookProps {
+export interface AudioRecorderHookProps {
   apiKey: string;
   apiBaseUrl?: string;
   speciality: string;
@@ -17,6 +22,31 @@ interface AudioRecorderHookProps {
   selectedFormat?: "json" | "hl7" | "fhir";
   skipDiarization?: boolean;
   silenceRemoval?: boolean;
+  /**
+   * Transcription API contract to target.
+   * - "v1" (default): session-based POST /api/transcribe — the server stitches
+   *   chunks and generates the note when the session completes.
+   * - "v2": stateless per-chunk POST /api/transcribe/v2 (STT + diarization +
+   *   role labeling); the client stitches the labeled transcript and calls
+   *   POST /api/transcribe/medical-note once on finalize. `selectedFormat` is
+   *   ignored in v2 (JSON only).
+   */
+  apiVersion?: "v1" | "v2";
+  /**
+   * Location of the ffmpeg-wasm core. Hosts under a strict CSP (e.g. an MV3
+   * browser extension, where remote script loading is blocked) must pass a
+   * locally-bundled URL. Defaults to a CDN when omitted.
+   */
+  corePath?: string;
+  /**
+   * Enable ffmpeg-wasm compression (WAV→FLAC) and silence removal. When false,
+   * chunks are uploaded as WAV and ffmpeg is never loaded — useful when the
+   * 23 MB core can't be bundled. Defaults to true. `silenceRemoval` is only
+   * honoured when this is true.
+   */
+  enableFfmpeg?: boolean;
+  /** Doctor name label forwarded to the API (optional). */
+  doctorName?: string;
   onTranscriptionUpdate: (text: string, sessionId: string) => void;
   onTranscriptionComplete: (
     text: string,
@@ -25,7 +55,7 @@ interface AudioRecorderHookProps {
   ) => void;
 }
 
-interface UseAudioRecorderReturn {
+export interface UseAudioRecorderReturn {
   mediaStreamRef: MutableRefObject<MediaStream | null>;
   startRecording: () => void;
   stopRecording: () => void;
@@ -262,6 +292,10 @@ const useAudioRecorder = ({
   selectedFormat = "json",
   skipDiarization = true,
   silenceRemoval = true,
+  apiVersion = "v1",
+  corePath,
+  enableFfmpeg = true,
+  doctorName: doctorNameProp,
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
@@ -289,7 +323,7 @@ const useAudioRecorder = ({
   const localSessionIdRef = React.useRef<string | null>(null); // This will be our IndexedDB session ID
   const wakeLockRef = React.useRef<WakeLockSentinel | null>(null);
 
-  const doctorName = "asad";
+  const doctorName = doctorNameProp ?? "";
 
   const [selectedModel, setSelectedModel] = React.useState<string>("new-large");
 
@@ -399,6 +433,10 @@ const useAudioRecorder = ({
   const skipDiarizationRef = React.useRef(skipDiarization);
   const removeSilenceRef = React.useRef(silenceRemoval);
   const selectedFormatRef = React.useRef(selectedFormat);
+  const apiVersionRef = React.useRef(apiVersion);
+  const enableFfmpegRef = React.useRef(enableFfmpeg);
+  // v2 only: labeled transcript per chunk sequence, stitched in order on finalize.
+  const v2LabeledBySequenceRef = React.useRef<Map<number, string>>(new Map());
 
   const {
     removeSilence,
@@ -410,7 +448,7 @@ const useAudioRecorder = ({
     statusMessage,
     convertToWav,
     convertToFlac,
-  } = useFFmpegConverter();
+  } = useFFmpegConverter(corePath);
 
   // Add ref to track the current ffmpegLoaded value (for WASM loading state)
   const ffmpegLoadedRef = React.useRef(ffmpegLoaded);
@@ -437,6 +475,14 @@ const useAudioRecorder = ({
   }, [selectedFormat]);
 
   React.useEffect(() => {
+    apiVersionRef.current = apiVersion;
+  }, [apiVersion]);
+
+  React.useEffect(() => {
+    enableFfmpegRef.current = enableFfmpeg;
+  }, [enableFfmpeg]);
+
+  React.useEffect(() => {
     if (alreadyDoneTranscription.length > 0) {
       onTranscriptionUpdate(
         alreadyDoneTranscription,
@@ -448,11 +494,12 @@ const useAudioRecorder = ({
   React.useEffect(() => {
     let isMounted = true;
 
-    // Only initialize FFmpeg WASM once
-    if (!ffmpegLoadedRef.current) {
+    // Only initialize FFmpeg WASM once, and only when compression/silence
+    // removal is enabled — otherwise the 23 MB core is never fetched.
+    if (enableFfmpeg && !ffmpegLoadedRef.current) {
       (async () => {
         try {
-          const ok = await loadFFmpeg();
+          const ok = await loadFFmpeg(corePath);
           if (isMounted && ok) {
             console.log("[SERA] FFmpeg WASM initialized");
           }
@@ -607,8 +654,8 @@ const useAudioRecorder = ({
           throw new Error("WAV conversion failed through FFmpeg");
         }
 
-        // Apply silence removal if enabled
-        if (currentFfmpegLoaded && removeSilenceRef.current) {
+        // Apply silence removal if enabled (requires ffmpeg).
+        if (enableFfmpegRef.current && currentFfmpegLoaded && removeSilenceRef.current) {
           try {
             const processedFile = await removeSilence(wavFile);
             if (processedFile && processedFile.size >= 1000) {
@@ -619,18 +666,122 @@ const useAudioRecorder = ({
           }
         }
 
-        // Convert WAV to FLAC for upload
+        // Convert WAV to FLAC for upload (requires ffmpeg). When ffmpeg is
+        // disabled the chunk is uploaded as WAV, which the STT accepts directly.
         let audioFile: File = wavFile;
-        try {
-          const flacFile = await convertToFlac(wavFile);
-          if (flacFile && flacFile.type === "audio/flac") {
-            audioFile = flacFile;
+        if (enableFfmpegRef.current) {
+          try {
+            const flacFile = await convertToFlac(wavFile);
+            if (flacFile && flacFile.type === "audio/flac") {
+              audioFile = flacFile;
+            }
+          } catch (flacError) {
+            console.warn("[SERA] FLAC conversion failed, using WAV file:", flacError);
           }
-        } catch (flacError) {
-          console.warn("[SERA] FLAC conversion failed, using WAV file:", flacError);
         }
 
         console.log(`[SERA] Step 8: Audio file ready | ${audioFile.name}, ${audioFile.size} bytes`);
+
+        // ===================== v2 API path =====================
+        // Stateless per-chunk transcript (STT + diarization + role labeling).
+        // The client stitches the labeled transcript across chunks and, on the
+        // final chunk, generates the note from the combined transcript. No
+        // server session, so `sessionId` stays the local IndexedDB id.
+        if (apiVersionRef.current === "v2") {
+          // A recovery retry re-sends the entire recording as one chunk, so
+          // drop any partial per-sequence transcripts to avoid double-counting.
+          if (retry) v2LabeledBySequenceRef.current.clear();
+
+          const chunkResult = await pRetry(
+            async (attemptNumber) => {
+              console.log(`[SERA] Step 9 (v2): Sending chunk to /v2 | sequence=${sequence}, attempt=${attemptNumber}`);
+              try {
+                return await postTranscribeV2Chunk(
+                  apiBaseUrl,
+                  effectiveApiKey || "",
+                  audioFile,
+                  speciality
+                );
+              } catch (e) {
+                // Abort retries on client errors (auth, bad request); retry 5xx.
+                const status = (e as { status?: number })?.status;
+                if (status && status >= 400 && status < 500) {
+                  throw new AbortError(
+                    status === 401
+                      ? "Transcription service authentication failed. Please check your API key configuration."
+                      : (e as Error).message
+                  );
+                }
+                throw e as Error;
+              }
+            },
+            {
+              retries: 3,
+              factor: 2,
+              minTimeout: 1000,
+              maxTimeout: 10000,
+              randomize: true,
+              onFailedAttempt: (err) => {
+                if (err.retriesLeft > 0) {
+                  setError(`Network issue detected. Retrying... (${err.retriesLeft} attempts remaining)`);
+                }
+              },
+            }
+          );
+
+          // Clear any retry-related error message on success.
+          if (error && error.includes("Retrying")) setError(null);
+
+          console.log(`[SERA] Step 10 (v2): Chunk transcript received | sequence=${sequence}`);
+
+          // Store this chunk's labeled transcript and re-stitch in sequence order.
+          v2LabeledBySequenceRef.current.set(sequence, chunkResult.labeledTranscript || "");
+          const seqs = Array.from(v2LabeledBySequenceRef.current.keys()).sort((a, b) => a - b);
+          const combinedSoFar = combineLabeledTranscripts(
+            seqs.map((s) => v2LabeledBySequenceRef.current.get(s))
+          );
+          // Triggers onTranscriptionUpdate via the alreadyDoneTranscription effect.
+          setAlreadyDoneTranscription(combinedSoFar);
+
+          if (isFinalChunk) {
+            console.log(`[SERA] Step 11 (v2): Final chunk - generating medical note`);
+            let classification: ClassificationInfoResponse;
+            if (combinedSoFar.trim()) {
+              classification = await postMedicalNote(
+                apiBaseUrl,
+                effectiveApiKey || "",
+                combinedSoFar,
+                {
+                  speciality,
+                  doctorName,
+                  skipDiarization: skipDiarizationRef.current,
+                  patientName: patientDetails?.name,
+                }
+              );
+            } else {
+              // No speech captured — hand back an empty note rather than failing.
+              classification = {
+                speciality,
+                generatedAt: new Date().toISOString(),
+                classifiedInfo: {},
+              };
+            }
+
+            setTranscriptionDone(true);
+            onTranscriptionComplete(
+              combinedSoFar,
+              classification,
+              sessionIdRef.current || localSessionIdRef.current || ""
+            );
+
+            if (localSessionIdRef.current) {
+              await markSessionComplete(localSessionIdRef.current);
+              setShowRetrySessionPrompt(false);
+            }
+          }
+          return;
+        }
+        // =================== end v2 API path ===================
 
         const patientDetailsPayload = patientDetails;
 
@@ -905,6 +1056,8 @@ const useAudioRecorder = ({
       silenceRemoval,
       skipDiarization,
       selectedFormat,
+      apiBaseUrl,
+      doctorName,
       patientHistory,
       patientDetails,
       onTranscriptionComplete,
@@ -990,6 +1143,7 @@ const useAudioRecorder = ({
         sequenceCounterRef.current = 0;
         nextExpectedSequenceRef.current = 0;
         receivedTranscriptionsRef.current.clear();
+        v2LabeledBySequenceRef.current.clear();
 
         // Reset failed chunk flag for new recording session
         sessionHasFailedChunkRef.current = false;

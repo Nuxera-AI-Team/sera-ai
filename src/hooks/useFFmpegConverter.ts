@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { createFFmpeg, fetchFile, FFmpeg } from "@ffmpeg/ffmpeg";
 import { MIN_VALID_SAMPLE_RATE, MAX_VALID_SAMPLE_RATE } from "../constants/audio";
 
@@ -114,7 +114,7 @@ interface UseFFmpegConverterReturn {
   progress: number;
   error: string | null;
   statusMessage: string;
-  loadFFmpeg: () => Promise<boolean>;
+  loadFFmpeg: (corePath?: string) => Promise<boolean>;
   convertToWav: (
     audioData: Float32Array,
     sampleRate: number,
@@ -129,7 +129,13 @@ interface UseFFmpegConverterReturn {
 let ffmpegLoadingPromise: Promise<boolean> | null = null;
 let ffmpegInstance: FFmpeg | null = null;
 
-const useFFmpegConverter = (): UseFFmpegConverterReturn => {
+const useFFmpegConverter = (corePath?: string): UseFFmpegConverterReturn => {
+  // Keep the caller-provided core location in a ref so the internal loadFFmpeg()
+  // calls inside convertToFlac/removeSilence pick it up without re-creating those
+  // callbacks. Hosts under a strict CSP (MV3 extension) pass a bundled path.
+  const corePathRef = useRef<string | undefined>(corePath);
+  corePathRef.current = corePath;
+
   const [isLoaded, setIsLoaded] = useState(true); // Always loaded since we use embedded worker
   const [ffmpegLoaded, setFfmpegLoaded] = useState(ffmpegInstance !== null);
   const [isConverting, setIsConverting] = useState(false);
@@ -137,7 +143,12 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
 
-  const loadFFmpeg = useCallback(async (): Promise<boolean> => {
+  // Default core location. Hosts that run under a strict CSP (e.g. an MV3
+  // browser extension, where remote script loading is blocked) must pass a
+  // locally-bundled `corePath` — see the `corePath` prop on useAudioRecorder.
+  const DEFAULT_CDN_CORE_PATH = "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js";
+
+  const loadFFmpeg = useCallback(async (overridePath?: string): Promise<boolean> => {
     // Already loaded
     if (ffmpegInstance) {
       console.log("[SERA] FFmpeg already loaded, skipping");
@@ -158,12 +169,12 @@ const useFFmpegConverter = (): UseFFmpegConverterReturn => {
     // Start loading
     ffmpegLoadingPromise = (async () => {
       try {
-        const cdnCorePath = 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js';
-        console.log(`[SERA] FFmpeg loading from CDN | corePath=${cdnCorePath}`);
+        const resolvedCorePath = overridePath || corePathRef.current || DEFAULT_CDN_CORE_PATH;
+        console.log(`[SERA] FFmpeg loading | corePath=${resolvedCorePath}`);
         setStatusMessage("Loading FFmpeg...");
         const ffmpeg = createFFmpeg({
           log: false,
-          corePath: cdnCorePath,
+          corePath: resolvedCorePath,
           progress: ({ ratio }) => {
             setProgress(Math.round(ratio * 100));
           },
