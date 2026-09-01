@@ -1,6 +1,6 @@
 {
   "name": "sera-ai",
-  "version": "1.0.37",
+  "version": "1.0.38",
   "description": "React component for real-time audio recording with AI transcription - works out of the box with embedded workers",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -72,13 +72,15 @@
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "lucide-react": "^0.562.0",
+    "opus-recorder": "^8.0.5",
     "postcss": "^8.5.6",
     "prettier": "^3.7.4",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vite": "^6.4.1"
+    "vite": "^6.4.1",
+    "vitest": "^4.1.11"
   },
   "repository": {
     "type": "git",
@@ -89,7 +91,6 @@
   },
   "homepage": "https://github.com/Nuxera-AI-Team/sera-ai#readme",
   "dependencies": {
-    "@ffmpeg/core": "^0.11.0",
     "@ffmpeg/ffmpeg": "^0.11.0",
     "p-retry": "^7.1.1"
   },
