@@ -1,10 +1,60 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  postTranscribeV2Chunk,
   parseV2ChunkResponse,
   combineLabeledTranscripts,
   parseClassifiedInfo,
   buildClassification,
 } from "./transcribeV2";
+
+describe("postTranscribeV2Chunk", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  function stubFetch(payload: unknown, status = 200) {
+    const captured: { url?: string; body?: FormData } = {};
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.url = String(url);
+      captured.body = init?.body as FormData;
+      return new Response(JSON.stringify(payload), { status });
+    }) as unknown as typeof fetch;
+    return captured;
+  }
+
+  it("posts the file, speciality, and removeSilence=true to the /v2 endpoint", async () => {
+    const captured = stubFetch({ labeledTranscript: "Doctor: hi", roles: {} });
+    const file = new File([new Uint8Array([1, 2, 3])], "chunk.wav", { type: "audio/wav" });
+
+    const res = await postTranscribeV2Chunk("https://api.test", "key123", file, "soap_note", true);
+
+    expect(captured.url).toBe("https://api.test/api/transcribe/v2");
+    expect(captured.body?.get("removeSilence")).toBe("true");
+    expect(captured.body?.get("speciality")).toBe("soap_note");
+    expect(captured.body?.get("file")).toBeInstanceOf(File);
+    expect(res.labeledTranscript).toBe("Doctor: hi");
+  });
+
+  it("defaults removeSilence to false when not requested", async () => {
+    const captured = stubFetch({ labeledTranscript: "", roles: {} });
+    const file = new File([new Uint8Array([1])], "chunk.wav", { type: "audio/wav" });
+
+    await postTranscribeV2Chunk("https://api.test", "k", file, "soap_note");
+
+    expect(captured.body?.get("removeSilence")).toBe("false");
+  });
+
+  it("throws with the HTTP status attached on a 4xx", async () => {
+    stubFetch({ error: "bad key" }, 401);
+    const file = new File([new Uint8Array([1])], "chunk.wav", { type: "audio/wav" });
+
+    await expect(
+      postTranscribeV2Chunk("https://api.test", "k", file, "soap_note", true)
+    ).rejects.toMatchObject({ status: 401 });
+  });
+});
 
 describe("parseV2ChunkResponse", () => {
   it("passes through a well-formed response", () => {

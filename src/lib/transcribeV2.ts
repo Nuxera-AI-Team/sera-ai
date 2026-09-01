@@ -42,10 +42,14 @@ export async function postTranscribeV2Chunk(
   apiKey: string,
   audioFile: File,
   speciality: string,
+  removeSilence = false,
 ): Promise<TranscribeV2ChunkResult> {
   const form = new FormData();
   form.append("file", audioFile, audioFile.name);
   if (speciality) form.append("speciality", speciality);
+  // Opt into server-side silence removal (v2 preprocessing). The server also
+  // downsamples to 16 kHz and FLAC-encodes before STT.
+  form.append("removeSilence", String(removeSilence));
 
   const res = await fetch(`${apiBaseUrl}/api/transcribe/v2`, {
     method: "POST",

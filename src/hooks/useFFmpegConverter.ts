@@ -129,12 +129,18 @@ interface UseFFmpegConverterReturn {
 let ffmpegLoadingPromise: Promise<boolean> | null = null;
 let ffmpegInstance: FFmpeg | null = null;
 
-const useFFmpegConverter = (corePath?: string): UseFFmpegConverterReturn => {
+const useFFmpegConverter = (
+  corePath?: string,
+  wavWorkerUrl?: string
+): UseFFmpegConverterReturn => {
   // Keep the caller-provided core location in a ref so the internal loadFFmpeg()
   // calls inside convertToFlac/removeSilence pick it up without re-creating those
   // callbacks. Hosts under a strict CSP (MV3 extension) pass a bundled path.
   const corePathRef = useRef<string | undefined>(corePath);
   corePathRef.current = corePath;
+  // Packaged WAV worker URL (CSP-safe alternative to the blob: worker).
+  const wavWorkerUrlRef = useRef<string | undefined>(wavWorkerUrl);
+  wavWorkerUrlRef.current = wavWorkerUrl;
 
   const [isLoaded, setIsLoaded] = useState(true); // Always loaded since we use embedded worker
   const [ffmpegLoaded, setFfmpegLoaded] = useState(ffmpegInstance !== null);
@@ -211,9 +217,12 @@ const useFFmpegConverter = (corePath?: string): UseFFmpegConverterReturn => {
       setStatusMessage("Converting audio...");
 
       try {
-        // Create worker dynamically
-        const workerUrl = createWavConversionWorker();
+        // Prefer a packaged worker URL (CSP-safe); otherwise a self-contained
+        // blob: worker. Only a blob URL needs revoking afterwards.
+        const usingBlobWorker = !wavWorkerUrlRef.current;
+        const workerUrl = wavWorkerUrlRef.current || createWavConversionWorker();
         const worker = new Worker(workerUrl);
+        const revokeIfBlob = () => { if (usingBlobWorker) URL.revokeObjectURL(workerUrl); };
 
         return new Promise<File>((resolve, reject) => {
           worker.onmessage = (e) => {
@@ -227,7 +236,7 @@ const useFFmpegConverter = (corePath?: string): UseFFmpegConverterReturn => {
               setProgress(100);
               setStatusMessage("Conversion complete");
               worker.terminate();
-              URL.revokeObjectURL(workerUrl);
+              revokeIfBlob();
 
               const blob = new Blob([data.buffer], { type: "audio/wav" });
               const file = new File([blob], fileName, { type: "audio/wav" });
@@ -237,7 +246,7 @@ const useFFmpegConverter = (corePath?: string): UseFFmpegConverterReturn => {
               setError(workerError);
               setStatusMessage("Conversion failed");
               worker.terminate();
-              URL.revokeObjectURL(workerUrl);
+              revokeIfBlob();
               reject(new Error(workerError));
             }
           };
@@ -247,7 +256,7 @@ const useFFmpegConverter = (corePath?: string): UseFFmpegConverterReturn => {
             setError("Worker error occurred");
             setStatusMessage("Conversion failed");
             worker.terminate();
-            URL.revokeObjectURL(workerUrl);
+            revokeIfBlob();
             reject(err);
           };
 

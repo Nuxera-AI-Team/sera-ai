@@ -39,6 +39,19 @@ export interface AudioRecorderHookProps {
    */
   corePath?: string;
   /**
+   * URL of the AudioWorklet processor script (shipped at
+   * sera-ai/dist/workers/audio-processor.js). Required for hosts whose CSP
+   * blocks blob: worklets (MV3 extensions load worklet scripts under
+   * script-src 'self'). When omitted, a self-contained blob: worklet is used.
+   */
+  workletUrl?: string;
+  /**
+   * URL of the WAV encoder worker script (shipped at
+   * sera-ai/dist/workers/wav-encoder.js). Same CSP rationale as `workletUrl`.
+   * When omitted, a self-contained blob: worker is used.
+   */
+  wavWorkerUrl?: string;
+  /**
    * Enable ffmpeg-wasm compression (WAV→FLAC) and silence removal. When false,
    * chunks are uploaded as WAV and ffmpeg is never loaded — useful when the
    * 23 MB core can't be bundled. Defaults to true. `silenceRemoval` is only
@@ -47,6 +60,21 @@ export interface AudioRecorderHookProps {
   enableFfmpeg?: boolean;
   /** Doctor name label forwarded to the API (optional). */
   doctorName?: string;
+  /**
+   * Capture sample rate in Hz. When set, the AudioContext is created at this
+   * rate so the browser resamples the mic input before capture — e.g. 16000 for
+   * ~3× smaller uploads (speech STT only needs 16 kHz). Must be within
+   * [16000, 48000]. Omit to use the browser default (typically 48 kHz). Falls
+   * back to the default if the browser rejects the requested rate.
+   */
+  captureSampleRate?: number;
+  /**
+   * v2 only: skip the finalize POST /api/transcribe/medical-note call. Use when
+   * the host already owns note generation (e.g. it regenerates the note from a
+   * combined transcript across recordings). onTranscriptionComplete then fires
+   * with the combined transcript and an empty classification. Defaults to false.
+   */
+  skipNoteGeneration?: boolean;
   onTranscriptionUpdate: (text: string, sessionId: string) => void;
   onTranscriptionComplete: (
     text: string,
@@ -294,8 +322,12 @@ const useAudioRecorder = ({
   silenceRemoval = true,
   apiVersion = "v1",
   corePath,
+  workletUrl,
+  wavWorkerUrl,
   enableFfmpeg = true,
   doctorName: doctorNameProp,
+  skipNoteGeneration = false,
+  captureSampleRate,
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
@@ -435,6 +467,9 @@ const useAudioRecorder = ({
   const selectedFormatRef = React.useRef(selectedFormat);
   const apiVersionRef = React.useRef(apiVersion);
   const enableFfmpegRef = React.useRef(enableFfmpeg);
+  const skipNoteGenerationRef = React.useRef(skipNoteGeneration);
+  const workletUrlRef = React.useRef(workletUrl);
+  workletUrlRef.current = workletUrl;
   // v2 only: labeled transcript per chunk sequence, stitched in order on finalize.
   const v2LabeledBySequenceRef = React.useRef<Map<number, string>>(new Map());
 
@@ -448,7 +483,7 @@ const useAudioRecorder = ({
     statusMessage,
     convertToWav,
     convertToFlac,
-  } = useFFmpegConverter(corePath);
+  } = useFFmpegConverter(corePath, wavWorkerUrl);
 
   // Add ref to track the current ffmpegLoaded value (for WASM loading state)
   const ffmpegLoadedRef = React.useRef(ffmpegLoaded);
@@ -481,6 +516,10 @@ const useAudioRecorder = ({
   React.useEffect(() => {
     enableFfmpegRef.current = enableFfmpeg;
   }, [enableFfmpeg]);
+
+  React.useEffect(() => {
+    skipNoteGenerationRef.current = skipNoteGeneration;
+  }, [skipNoteGeneration]);
 
   React.useEffect(() => {
     if (alreadyDoneTranscription.length > 0) {
@@ -700,7 +739,8 @@ const useAudioRecorder = ({
                   apiBaseUrl,
                   effectiveApiKey || "",
                   audioFile,
-                  speciality
+                  speciality,
+                  removeSilenceRef.current
                 );
               } catch (e) {
                 // Abort retries on client errors (auth, bad request); retry 5xx.
@@ -744,9 +784,16 @@ const useAudioRecorder = ({
           setAlreadyDoneTranscription(combinedSoFar);
 
           if (isFinalChunk) {
-            console.log(`[SERA] Step 11 (v2): Final chunk - generating medical note`);
+            console.log(`[SERA] Step 11 (v2): Final chunk - finalizing`);
             let classification: ClassificationInfoResponse;
-            if (combinedSoFar.trim()) {
+            if (skipNoteGenerationRef.current) {
+              // Host owns note generation — hand back the transcript only.
+              classification = {
+                speciality,
+                generatedAt: new Date().toISOString(),
+                classifiedInfo: {},
+              };
+            } else if (combinedSoFar.trim()) {
               classification = await postMedicalNote(
                 apiBaseUrl,
                 effectiveApiKey || "",
@@ -1185,7 +1232,21 @@ const useAudioRecorder = ({
         });
       }
 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      // Create the AudioContext at the requested capture rate (e.g. 16 kHz for
+      // smaller uploads) so the browser resamples the mic input. Fall back to the
+      // default context if the browser rejects the requested rate.
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      let audioContext: AudioContext;
+      if (captureSampleRate) {
+        try {
+          audioContext = new AudioContextClass({ sampleRate: captureSampleRate });
+        } catch (e) {
+          console.warn(`[SERA] Capture sample rate ${captureSampleRate}Hz rejected, using default:`, e);
+          audioContext = new AudioContextClass();
+        }
+      } else {
+        audioContext = new AudioContextClass();
+      }
 
       // Create session with actual sample rate now that we have audioContext
       if (!isPaused && localSessionIdRef.current) {
@@ -1197,12 +1258,15 @@ const useAudioRecorder = ({
         });
       }
 
-      // Create audio processor worker dynamically
-      const processorUrl = createAudioProcessorWorker();
+      // Load the AudioWorklet processor. Prefer a packaged URL (required where a
+      // strict CSP blocks blob: worklets, e.g. MV3 extensions); otherwise fall
+      // back to a self-contained blob: worklet.
+      const usingBlobWorklet = !workletUrlRef.current;
+      const processorUrl = workletUrlRef.current || createAudioProcessorWorker();
       await audioContext.audioWorklet.addModule(processorUrl);
 
-      // Clean up the blob URL
-      URL.revokeObjectURL(processorUrl);
+      // Only a blob URL needs revoking.
+      if (usingBlobWorklet) URL.revokeObjectURL(processorUrl);
 
       const processor = new AudioWorkletNode(audioContext, "audio-processor", {
         processorOptions: { sampleRate: audioContext.sampleRate },
@@ -1288,6 +1352,7 @@ const useAudioRecorder = ({
     patientDetails,
     speciality,
     currentDeviceId,
+    captureSampleRate,
   ]);
 
   const stopRecording = React.useCallback(async () => {

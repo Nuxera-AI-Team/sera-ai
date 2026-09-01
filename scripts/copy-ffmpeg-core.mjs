@@ -1,9 +1,11 @@
-// Copy the ffmpeg-wasm core into dist/ffmpeg so the package ships it.
+// Copy runtime assets the package must ship as loadable files:
+//   - the ffmpeg-wasm core            → dist/ffmpeg
+//   - the AudioWorklet + WAV worker    → dist/workers
 //
-// Hosts that run under a strict CSP (an MV3 browser extension, where remote
-// script loading is blocked) can't fetch the core from a CDN. They copy these
-// files out of node_modules/sera-ai/dist/ffmpeg into their own bundle and pass
-// the local URL as `corePath` to useAudioRecorder. Runs from tsup's onSuccess.
+// Hosts under a strict CSP (an MV3 browser extension) can't load these from a
+// CDN or from blob: URLs. They copy these files into their own bundle and pass
+// the local URLs (corePath / workletUrl / wavWorkerUrl) to useAudioRecorder.
+// Runs from tsup's onSuccess.
 
 import { mkdirSync, copyFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -11,29 +13,44 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const srcDir = join(root, "node_modules", "@ffmpeg", "core", "dist");
-const outDir = join(root, "dist", "ffmpeg");
 
-const FILES = ["ffmpeg-core.js", "ffmpeg-core.wasm", "ffmpeg-core.worker.js"];
-
-if (!existsSync(srcDir)) {
-  console.error(
-    `[copy-ffmpeg-core] @ffmpeg/core not found at ${srcDir}. Is it installed?`
-  );
-  process.exit(1);
-}
-
-mkdirSync(outDir, { recursive: true });
-
-let copied = 0;
-for (const file of FILES) {
-  const from = join(srcDir, file);
-  if (!existsSync(from)) {
-    console.warn(`[copy-ffmpeg-core] skipping missing ${file}`);
-    continue;
+function copyFiles(label, srcDir, outDir, files, failIfMissingDir) {
+  if (!existsSync(srcDir)) {
+    if (failIfMissingDir) {
+      console.error(`[copy-assets] ${label}: source not found at ${srcDir}`);
+      process.exit(1);
+    }
+    console.warn(`[copy-assets] ${label}: source not found at ${srcDir}, skipping`);
+    return;
   }
-  copyFileSync(from, join(outDir, file));
-  copied++;
+  mkdirSync(outDir, { recursive: true });
+  let copied = 0;
+  for (const file of files) {
+    const from = join(srcDir, file);
+    if (!existsSync(from)) {
+      console.warn(`[copy-assets] ${label}: skipping missing ${file}`);
+      continue;
+    }
+    copyFileSync(from, join(outDir, file));
+    copied++;
+  }
+  console.log(`[copy-assets] ${label}: copied ${copied}/${files.length} file(s) to ${outDir.replace(root + "/", "")}`);
 }
 
-console.log(`[copy-ffmpeg-core] copied ${copied}/${FILES.length} core file(s) to dist/ffmpeg`);
+// ffmpeg-wasm core (from the installed @ffmpeg/core package)
+copyFiles(
+  "ffmpeg-core",
+  join(root, "node_modules", "@ffmpeg", "core", "dist"),
+  join(root, "dist", "ffmpeg"),
+  ["ffmpeg-core.js", "ffmpeg-core.wasm", "ffmpeg-core.worker.js"],
+  true
+);
+
+// AudioWorklet + WAV worker (standalone source files, shipped verbatim)
+copyFiles(
+  "workers",
+  join(root, "src", "workers"),
+  join(root, "dist", "workers"),
+  ["audio-processor.js", "wav-encoder.js"],
+  true
+);
