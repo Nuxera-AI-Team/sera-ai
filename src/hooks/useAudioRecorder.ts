@@ -10,6 +10,7 @@ import {
   postMedicalNote,
   combineLabeledTranscripts,
 } from "../lib/transcribeV2";
+import { encodePcmToOpus } from "../lib/opusEncoder";
 
 export interface AudioRecorderHookProps {
   apiKey: string;
@@ -60,6 +61,21 @@ export interface AudioRecorderHookProps {
   enableFfmpeg?: boolean;
   /** Doctor name label forwarded to the API (optional). */
   doctorName?: string;
+  /**
+   * Per-chunk upload format.
+   * - "wav" (default): 16-bit WAV (optionally FLAC-compressed when ffmpeg is on).
+   * - "opus": encode each chunk to a complete Ogg Opus file (~10× smaller than
+   *   WAV) via a packaged libopus-wasm worker — requires `opusWorkerUrl`. The
+   *   gapless AudioWorklet PCM capture is unchanged; only the encoder differs.
+   */
+  chunkFormat?: "wav" | "opus";
+  /**
+   * URL of the Opus encoder worker (opus-recorder's encoderWorker.min.js,
+   * shipped at sera-ai/dist/workers/opus-encoder-worker.js). Required when
+   * `chunkFormat` is "opus". Load from a packaged chrome-extension:// URL under
+   * a strict CSP; the embedded wasm needs `wasm-unsafe-eval`.
+   */
+  opusWorkerUrl?: string;
   /**
    * Capture sample rate in Hz. When set, the AudioContext is created at this
    * rate so the browser resamples the mic input before capture — e.g. 16000 for
@@ -328,6 +344,8 @@ const useAudioRecorder = ({
   doctorName: doctorNameProp,
   skipNoteGeneration = false,
   captureSampleRate,
+  chunkFormat = "wav",
+  opusWorkerUrl,
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
@@ -470,6 +488,10 @@ const useAudioRecorder = ({
   const skipNoteGenerationRef = React.useRef(skipNoteGeneration);
   const workletUrlRef = React.useRef(workletUrl);
   workletUrlRef.current = workletUrl;
+  const chunkFormatRef = React.useRef(chunkFormat);
+  chunkFormatRef.current = chunkFormat;
+  const opusWorkerUrlRef = React.useRef(opusWorkerUrl);
+  opusWorkerUrlRef.current = opusWorkerUrl;
   // v2 only: labeled transcript per chunk sequence, stitched in order on finalize.
   const v2LabeledBySequenceRef = React.useRef<Map<number, string>>(new Map());
 
@@ -685,37 +707,51 @@ const useAudioRecorder = ({
         console.log(`[SERA] Step 7: Audio preparation | ${audioData.length} samples, ${(audioData.length / currentSampleRate).toFixed(1)}s, ${currentSampleRate}Hz`);
 
         const timestamp = Date.now();
-        const fileName = `audio-chunk-${timestamp}.wav`;
 
-        let wavFile: File | null = await convertToWav(audioData, currentSampleRate, fileName);
+        let audioFile: File;
+        if (chunkFormatRef.current === "opus" && opusWorkerUrlRef.current) {
+          // Encode the captured PCM straight to a complete Ogg Opus file
+          // (~10× smaller than WAV). No ffmpeg involved — the same gapless
+          // AudioWorklet PCM is encoded per chunk by a packaged libopus-wasm
+          // worker, so nothing is dropped between chunks.
+          audioFile = await encodePcmToOpus(audioData, {
+            sampleRate: currentSampleRate,
+            workerUrl: opusWorkerUrlRef.current,
+            fileName: `audio-chunk-${timestamp}.opus`,
+            encoderSampleRate: 16000,
+          });
+        } else {
+          const fileName = `audio-chunk-${timestamp}.wav`;
+          let wavFile: File | null = await convertToWav(audioData, currentSampleRate, fileName);
 
-        if (!wavFile) {
-          throw new Error("WAV conversion failed through FFmpeg");
-        }
-
-        // Apply silence removal if enabled (requires ffmpeg).
-        if (enableFfmpegRef.current && currentFfmpegLoaded && removeSilenceRef.current) {
-          try {
-            const processedFile = await removeSilence(wavFile);
-            if (processedFile && processedFile.size >= 1000) {
-              wavFile = processedFile;
-            }
-          } catch (silenceError) {
-            console.warn("[SERA] Silence removal failed, using original file:", silenceError);
+          if (!wavFile) {
+            throw new Error("WAV conversion failed through FFmpeg");
           }
-        }
 
-        // Convert WAV to FLAC for upload (requires ffmpeg). When ffmpeg is
-        // disabled the chunk is uploaded as WAV, which the STT accepts directly.
-        let audioFile: File = wavFile;
-        if (enableFfmpegRef.current) {
-          try {
-            const flacFile = await convertToFlac(wavFile);
-            if (flacFile && flacFile.type === "audio/flac") {
-              audioFile = flacFile;
+          // Apply silence removal if enabled (requires ffmpeg).
+          if (enableFfmpegRef.current && currentFfmpegLoaded && removeSilenceRef.current) {
+            try {
+              const processedFile = await removeSilence(wavFile);
+              if (processedFile && processedFile.size >= 1000) {
+                wavFile = processedFile;
+              }
+            } catch (silenceError) {
+              console.warn("[SERA] Silence removal failed, using original file:", silenceError);
             }
-          } catch (flacError) {
-            console.warn("[SERA] FLAC conversion failed, using WAV file:", flacError);
+          }
+
+          // Convert WAV to FLAC for upload (requires ffmpeg). When ffmpeg is
+          // disabled the chunk is uploaded as WAV, which the STT accepts directly.
+          audioFile = wavFile;
+          if (enableFfmpegRef.current) {
+            try {
+              const flacFile = await convertToFlac(wavFile);
+              if (flacFile && flacFile.type === "audio/flac") {
+                audioFile = flacFile;
+              }
+            } catch (flacError) {
+              console.warn("[SERA] FLAC conversion failed, using WAV file:", flacError);
+            }
           }
         }
 
