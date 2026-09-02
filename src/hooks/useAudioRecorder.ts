@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, MutableRefObject } from "react";
+import React, { useRef, useState, useCallback, MutableRefObject } from "react";
 import useFFmpegConverter from "./useFFmpegConverter";
 import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
@@ -380,7 +380,7 @@ const useAudioRecorder = ({
 
   const doctorName = doctorNameProp ?? "";
 
-  const [selectedModel, setSelectedModel] = React.useState<string>("new-large");
+  const [selectedModel] = React.useState<string>("new-large");
 
   const [isRetryingSession, setIsRetryingSession] = React.useState(false);
   const [showRetrySessionPrompt, setShowRetrySessionPrompt] = React.useState(false);
@@ -976,7 +976,7 @@ const useAudioRecorder = ({
             }
 
             // Parse response
-            let responseData: any;
+            let responseData: unknown;
 
             if (selectedFormatRef.current === "json") {
               responseData = await response.json();
@@ -1276,7 +1276,7 @@ const useAudioRecorder = ({
       // Create the AudioContext at the requested capture rate (e.g. 16 kHz for
       // smaller uploads) so the browser resamples the mic input. Fall back to the
       // default context if the browser rejects the requested rate.
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       let audioContext: AudioContext;
       if (captureSampleRate) {
         try {
@@ -1611,7 +1611,7 @@ const useAudioRecorder = ({
 
       console.log("Audio Test Got media stream:", stream.id);
 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioContext = new (window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)();
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
 

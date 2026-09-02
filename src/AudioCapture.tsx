@@ -192,7 +192,6 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
   showDownload = false,
   className = "",
   visualizerClassName = "",
-  style,
 }) => {
   // Inject Tailwind styles on component mount
   React.useEffect(() => {
@@ -213,7 +212,6 @@ const AudioCapture: React.FC<AudioCaptureProps> = ({
     currentDeviceId,
     selectMicrophone,
     validateMicrophoneAccess,
-    audioLevel,
     noAudioDetected,
     isConverting,
     progress,

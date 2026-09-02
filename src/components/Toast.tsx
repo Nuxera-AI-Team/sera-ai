@@ -16,7 +16,6 @@ export default function Toast({
   type,
   onClose,
   duration = 3000,
-  onCancelRedirect,
 }: ToastProps) {
   React.useEffect(() => {
     const timer = setTimeout(() => {

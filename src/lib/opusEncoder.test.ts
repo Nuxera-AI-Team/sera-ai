@@ -10,13 +10,13 @@ class MockWorker {
   static behavior: "ok" | "empty" | "error" = "ok";
   onmessage: Handler = null;
   onerror: ((e: { message: string }) => void) | null = null;
-  posted: any[] = [];
+  posted: unknown[] = [];
   terminated = false;
 
   constructor(public url: string) {
     MockWorker.instances.push(this);
   }
-  postMessage(msg: any) {
+  postMessage(msg: unknown) {
     this.posted.push(msg);
     if (msg.command === "init") {
       if (MockWorker.behavior === "error") {

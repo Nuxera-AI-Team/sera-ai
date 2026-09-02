@@ -1,4 +1,18 @@
-import React, { useState, useCallback } from "react";
+/* eslint-disable @typescript-eslint/no-explicit-any --
+ * This module parses and emits HL7 v2 and FHIR payloads produced by other
+ * systems. Their incoming shape is not ours to declare: the converters walk
+ * bundles, entries and extensions whose contents vary per sender, which is what
+ * the `any` parameters and index signatures carry.
+ *
+ * These are deliberately left as-is rather than narrowed blind. This file is
+ * live in the published hook (useAudioRecorder builds HL7/FHIR requests through
+ * it) and has no test coverage, and clinical systems reject a resource whose
+ * structure has shifted — so retyping it needs fixtures and tests written first,
+ * as its own change. Every other `any` in the library has been removed; the only
+ * others left are three declarations that form the published type surface
+ * (see types.ts).
+ */
+import { useState, useCallback } from "react";
 import { PatientDetails } from "../types";
 
 interface TranscriptionResponse {
@@ -27,11 +41,6 @@ interface SpecialitiesResponse {
   [key: string]: any;
 }
 
-interface ApiResponse<T = any> {
-  data?: T;
-  [key: string]: any;
-}
-
 interface HL7Segment {
   type: string;
   fields: string[];
@@ -45,18 +54,6 @@ interface FHIRResource {
     div: string;
   };
   [key: string]: any;
-}
-
-interface LoginResponse {
-  user: {
-    id: number;
-    username: string;
-    user_type: string[];
-  };
-  token: string;
-  expiresAt: string;
-  refreshToken: string;
-  refreshTokenExpiresAt?: string;
 }
 
 // Add new interface for transcription request
@@ -112,18 +109,6 @@ interface ApiKeyRequest {
   status?: string;
   user_id?: number;
   is_default?: boolean;
-  [key: string]: any;
-}
-
-interface ApiKeyResponse {
-  id: number;
-  key: string;
-  name?: string;
-  type?: string;
-  status?: string;
-  created_at: string;
-  user_id: number;
-  is_default: boolean;
   [key: string]: any;
 }
 
@@ -301,10 +286,10 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       try {
         const segments = parseHL7(hl7Data);
         let transcription = "";
-        let classifiedInfo: any = {};
+        const classifiedInfo: any = {};
         let sessionId = "";
-        let metadata: any = {};
-        let speciality: string = "";
+        const metadata: any = {};
+        const speciality: string = "";
 
         console.log(`[SERA] Parsing HL7 transcription | segments=${segments.length}`);
 
@@ -428,7 +413,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
   );
 
   // Convert HL7 specialities response to JSON
-  const convertHL7SpecialitiesToJson = useCallback(
+  const _convertHL7SpecialitiesToJson = useCallback(
     (hl7Data: string): SpecialitiesResponse => {
       try {
         const segments = parseHL7(hl7Data);
@@ -724,7 +709,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
             break;
 
           case "json":
-          default:
+          default: {
             const transcription = response.transcription || response.text || "";
             const sessionId = response.sessionId || `session_${Date.now()}`;
 
@@ -740,6 +725,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
               },
             };
             break;
+          }
         }
 
         return result;
@@ -1509,7 +1495,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
     (hl7Data: string): DictationResponse => {
       try {
         const segments = parseHL7(hl7Data);
-        let dictationResponse: Partial<DictationResponse> = {};
+        const dictationResponse: Partial<DictationResponse> = {};
 
         console.log(`[SERA] Parsing HL7 dictation | segments=${segments.length}`);
 
@@ -1661,7 +1647,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
   // Convert FHIR dictation response to JSON
   const convertFHIRDictationToJson = useCallback((fhirData: any): DictationResponse => {
     try {
-      let dictationResponse: Partial<DictationResponse> = {};
+      const dictationResponse: Partial<DictationResponse> = {};
 
       let parsedData = fhirData;
       if (typeof fhirData === "string") {
@@ -1704,7 +1690,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                     dictationResponse.dictation = ext.valueString || "";
                     break;
 
-                  case "http://nuxera.ai/extensions/audio-size":
+                  case "http://nuxera.ai/extensions/audio-size": {
                     if (!dictationResponse.processingTimes) {
                       dictationResponse.processingTimes = {};
                     }
@@ -1714,6 +1700,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                       dictationResponse.processingTimes.audioSizeMB = parseFloat(sizeMatch[1]);
                     }
                     break;
+                  }
 
                   case "http://nuxera.ai/extensions/processing-timestamp":
                     if (!dictationResponse.processingTimes) {
@@ -1771,7 +1758,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                 // Base64 encoded text
                 try {
                   dictationResponse.dictation = atob(attachment.data);
-                } catch (e) {
+                } catch {
                   dictationResponse.dictation = attachment.data;
                 }
               }
@@ -1942,7 +1929,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
   );
 
   // Update HL7 API Key request creator to remove expiry_at
-  const createHL7ApiKeyRequest = useCallback(
+  const _createHL7ApiKeyRequest = useCallback(
     (
       apiKeyData: ApiKeyRequest,
       operation:
@@ -2079,7 +2066,7 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
     }
   };
 
-  const createFHIRApiKeyRequest = useCallback(
+  const _createFHIRApiKeyRequest = useCallback(
     (
       apiKeyData: ApiKeyRequest,
       operation:

@@ -10,13 +10,6 @@ interface AudioVisualizerImprovedProps {
 }
 
 // Color palette with complementary gradient stops for more sophisticated visuals
-const COLORS = {
-  primary: ["rgba(139, 92, 246, 0.9)", "rgba(168, 85, 247, 0.8)", "rgba(192, 132, 252, 0.7)"], // Purples
-  accent: ["rgba(79, 70, 229, 0.7)", "rgba(99, 102, 241, 0.6)", "rgba(129, 140, 248, 0.5)"], // Indigos
-  highlight: ["rgba(236, 72, 153, 0.7)", "rgba(244, 114, 182, 0.6)", "rgba(249, 168, 212, 0.5)"], // Pinks
-  background: ["rgba(76, 29, 149, 0.6)", "rgba(91, 33, 182, 0.3)", "rgba(30, 27, 75, 0.1)"], // Dark purples
-};
-
 interface Particle {
   x: number;
   y: number;
@@ -42,11 +35,10 @@ function createParticle(isIdle: boolean, x: number, y: number, intensity: number
   }
 
   // Different colors for idle vs active
-  let color: string;
   const hue = isIdle ? 260 + Math.random() * 40 : 290 + Math.random() * 50;
   const saturation = 70 + Math.random() * 30;
   const lightness = 50 + Math.random() * 30;
-  color = `hsla(${hue}, ${saturation}%, ${lightness}%, 0.7)`;
+  const color = `hsla(${hue}, ${saturation}%, ${lightness}%, 0.7)`;
 
   // Adjust velocity and life based on state
   const speed = isIdle ? 0.5 + Math.random() : 2 + Math.random() * 5 * intensity;
@@ -181,7 +173,7 @@ export default function AudioVisualizerImproved({
               ctx.stroke();
               break;
 
-            case "triangle":
+            case "triangle": {
               ctx.beginPath();
               ctx.fillStyle = p.color;
               const angle = Math.atan2(p.vy, p.vx);
@@ -199,6 +191,7 @@ export default function AudioVisualizerImproved({
               ctx.closePath();
               ctx.fill();
               break;
+            }
           }
 
           ctx.globalAlpha = 1;
@@ -431,7 +424,6 @@ export default function AudioVisualizerImproved({
           ctx.lineWidth = 2;
 
           const pathPoints: [number, number][] = [];
-          const smoothFactor = 0.3;
 
           for (let i = 0; i < barCount; i++) {
             const value = frequencyData[i];

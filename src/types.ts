@@ -67,6 +67,9 @@ export interface AudioRecorderProps {
   /**
    * Callback function called when API request succeeds
    */
+  // Published API: narrowing this would break consumers that read arbitrary
+  // response fields off the callback payload.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onSuccess?: (data: any) => void;
 
   /**
@@ -90,6 +93,9 @@ export interface AudioRecorderProps {
   style?: React.CSSProperties;
 }
 
+// Published API: the default type parameter is part of the surface, and
+// `unknown` would reject existing consumer code that indexes into a response.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface APIResponse<T = any> {
   success: boolean;
   data?: T;
@@ -99,6 +105,8 @@ export interface APIResponse<T = any> {
 
 export interface APIOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  // Published API.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   body?: any;
   headers?: Record<string, string>;
 }

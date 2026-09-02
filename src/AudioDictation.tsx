@@ -109,7 +109,6 @@ const AudioDictation: React.FC<AudioDictationProps> = ({
   onError,
   className = "",
   style,
-  buttonText,
   placeholder = "Click to dictate...",
 }) => {
   // Inject styles on component mount

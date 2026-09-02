@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AudioRecorderProps, APIResponse, APIOptions } from "./types";
+import { AudioRecorderProps } from "./types";
 import useAudioRecorder from "./hooks/useAudioRecorder";
 import { Mic, Square, Loader2, Pause, Play, AlertTriangle } from "lucide-react";
 import Toast from "./components/Toast";
@@ -126,11 +126,9 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   selectedFormat = "json",
   onTranscriptionUpdate,
   onTranscriptionComplete,
-  onSuccess,
   onError,
   className = "",
   visualizerClassName = "",
-  style,
 }) => {
   // Inject Tailwind styles on component mount
   React.useEffect(() => {
@@ -150,17 +148,12 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     transcriptionDone,
     availableDevices,
     validateMicrophoneAccess,
-    audioLevel,
     noAudioDetected,
     // Add recovery properties
     isRetryingSession,
     showRetrySessionPrompt,
     retryFailedSession,
     clearAllSessions,
-    // Add FFmpeg processing status
-    isConverting,
-    progress,
-    statusMessage,
   } = useAudioRecorder({
     apiKey: apiKey,
     apiBaseUrl: apiBaseUrl,
@@ -173,12 +166,12 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     onTranscriptionUpdate: (text, sessionId) => {
       console.log(`[SERA] Transcription update received | sessionId=${sessionId}, textLength=${text.length}`);
       if (text.length > 0) {
-        onTranscriptionUpdate && onTranscriptionUpdate(text, sessionId);
+        onTranscriptionUpdate?.(text, sessionId);
       }
     },
     onTranscriptionComplete: (text, classification, sessionId) => {
       console.log(`[SERA] Transcription complete | sessionId=${sessionId}, textLength=${text.length}, hasClassification=${!!classification}`);
-      onTranscriptionComplete && onTranscriptionComplete(text, classification, sessionId);
+      onTranscriptionComplete?.(text, classification, sessionId);
     },
   });
 

@@ -108,7 +108,6 @@ const useAudioDictation = ({
   onError,
   apiKey,
   apiBaseUrl = API_BASE_URL,
-  appendMode = true,
   doctorName = "asad",
   patientId,
   sessionId,
@@ -177,7 +176,7 @@ const useAudioDictation = ({
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioContext = new (window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)();
 
       // Create embedded audio processor worker dynamically
       const processorUrl = createDictationProcessorWorker();
@@ -414,7 +413,7 @@ const useAudioDictation = ({
       };
 
       let requestBody: FormData;
-      let headers: Record<string, string> = {
+      const headers: Record<string, string> = {
         "x-api-key": effectiveApiKey || "",
       };
 
@@ -471,7 +470,7 @@ const useAudioDictation = ({
       }
 
       // Handle different response formats
-      let responseData: any;
+      let responseData: unknown;
       const contentType = response.headers.get("content-type") || "";
 
       if (selectedFormat === "json" || contentType.includes("application/json")) {
