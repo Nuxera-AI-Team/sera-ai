@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, MutableRefObject } from "react";
+import { useState, useRef, useCallback, MutableRefObject } from "react";
 import useFFmpegConverter from "./useFFmpegConverter";
 import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
@@ -503,7 +503,7 @@ const useAudioCapture = ({
       mediaStreamRef.current = stream;
 
       // Create audio context and processor
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioContext = new (window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)();
       const processorUrl = createAudioCaptureWorker();
       await audioContext.audioWorklet.addModule(processorUrl);
       URL.revokeObjectURL(processorUrl);

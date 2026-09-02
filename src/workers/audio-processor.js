@@ -92,7 +92,7 @@ class AudioProcessor extends AudioWorkletProcessor {
     };
   }
 
-  process(inputs, outputs) {
+  process(inputs, _outputs) {
     if (this._isStopped || this._isPaused) {
       return true;
     }

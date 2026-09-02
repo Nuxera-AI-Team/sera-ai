@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 interface AudioSession {
   id: string;
@@ -54,6 +54,19 @@ interface AudioRecoveryHookReturn {
   clearFailedSessions: () => Promise<void>;
 }
 
+/**
+ * One in-flight worker request. The payloads differ per operation (an encoded
+ * string for one, a number[] for another) and the rejecters take a concrete
+ * Error, so no single precise parameter type covers them: `unknown` is rejected
+ * at the call sites because a function parameter cannot be widened.
+ */
+type PendingOperation = {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+};
+
 const useAudioRecovery = (
   reprocessSession: (
     audioChunks: Float32Array[],
@@ -62,12 +75,11 @@ const useAudioRecovery = (
 ): AudioRecoveryHookReturn => {
   const dbRef = useRef<IDBDatabase | null>(null);
   const workerRef = useRef<Worker | null>(null);
-  const pendingOperations = useRef<Map<string, { resolve: Function; reject: Function }>>(new Map());
+  const pendingOperations = useRef<Map<string, PendingOperation>>(new Map());
 
   const DB_NAME = "AudioSessionDB";
   const STORE_NAME = "audioSessions";
   const DB_VERSION = 1;
-  const MAX_RETRY_COUNT = 3;
 
   const createAudioEncodingWorker = () => {
     const workerCode = `
@@ -201,7 +213,7 @@ const useAudioRecovery = (
         URL.revokeObjectURL(workerUrl);
 
         workerRef.current.onmessage = (e) => {
-          const { type, id, result, error, progress, message } = e.data;
+          const { type, id, result, error } = e.data;
           const operation = pendingOperations.current.get(id);
 
           if (!operation) {
@@ -229,7 +241,7 @@ const useAudioRecovery = (
         workerRef.current.onerror = (error) => {
           console.error("[SERA] Audio encoding worker error:", error);
           // Reject all pending operations
-          for (const [id, operation] of pendingOperations.current) {
+          for (const operation of pendingOperations.current.values()) {
             operation.reject(new Error("Worker crashed"));
           }
           pendingOperations.current.clear();

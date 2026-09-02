@@ -2,11 +2,6 @@ import { useState, useCallback, useRef } from "react";
 import { createFFmpeg, fetchFile, FFmpeg } from "@ffmpeg/ffmpeg";
 import { MIN_VALID_SAMPLE_RATE, MAX_VALID_SAMPLE_RATE } from "../constants/audio";
 
-interface FFmpegConverterOptions {
-  quality?: number;
-  bitRate?: number;
-}
-
 // Embedded Worker for WAV conversion only (silence removal now uses FFmpeg WASM)
 const createWavConversionWorker = () => {
   const minSampleRate = MIN_VALID_SAMPLE_RATE;
