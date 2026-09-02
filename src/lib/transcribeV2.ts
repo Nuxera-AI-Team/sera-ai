@@ -28,6 +28,7 @@ export interface MedicalNoteOptions {
   userId?: number;
   patientName?: string;
   doctorName?: string;
+  /** Skip backend speaker (Doctor/Patient) labeling. Defaults to `true`. */
   skipDiarization?: boolean;
 }
 
@@ -117,7 +118,11 @@ export async function postMedicalNote(
     speciality: opts.speciality || "soap_note",
     patientName: opts.patientName ?? "sera-ai",
     doctorName: opts.doctorName ?? "sera-ai",
-    skipDiarization: String(opts.skipDiarization ?? false),
+    // Default to skipping speaker labeling. The package's public default (the
+    // `skipDiarization` prop on useAudioRecorder) is `true`; an omitted option
+    // here has to mean the same thing, or an internal caller that leaves it out
+    // silently turns backend labeling on.
+    skipDiarization: String(opts.skipDiarization ?? true),
   };
 
   const res = await fetch(`${apiBaseUrl}/api/transcribe/medical-note`, {

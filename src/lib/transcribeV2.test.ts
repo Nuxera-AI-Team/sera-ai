@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   postTranscribeV2Chunk,
+  postMedicalNote,
   parseV2ChunkResponse,
   combineLabeledTranscripts,
   parseClassifiedInfo,
@@ -53,6 +54,56 @@ describe("postTranscribeV2Chunk", () => {
     await expect(
       postTranscribeV2Chunk("https://api.test", "k", file, "soap_note", true)
     ).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe("postMedicalNote", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  // This endpoint takes JSON, so capture the serialized body rather than a FormData.
+  function stubJsonFetch(payload: unknown = { classifiedInfo: {} }, status = 200) {
+    const captured: { url?: string; params?: Record<string, string> } = {};
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.url = String(url);
+      captured.params = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify(payload), { status });
+    }) as unknown as typeof fetch;
+    return captured;
+  }
+
+  it("defaults skipDiarization to true when the caller omits it", async () => {
+    const captured = stubJsonFetch();
+
+    await postMedicalNote("https://api.test", "k", "Doctor: hi", { speciality: "soap_note" });
+
+    expect(captured.url).toBe("https://api.test/api/transcribe/medical-note");
+    expect(captured.params?.skipDiarization).toBe("true");
+  });
+
+  it("honours an explicit skipDiarization=false from the caller", async () => {
+    const captured = stubJsonFetch();
+
+    await postMedicalNote("https://api.test", "k", "Doctor: hi", {
+      speciality: "soap_note",
+      skipDiarization: false,
+    });
+
+    expect(captured.params?.skipDiarization).toBe("false");
+  });
+
+  it("honours an explicit skipDiarization=true from the caller", async () => {
+    const captured = stubJsonFetch();
+
+    await postMedicalNote("https://api.test", "k", "Doctor: hi", {
+      speciality: "soap_note",
+      skipDiarization: true,
+    });
+
+    expect(captured.params?.skipDiarization).toBe("true");
   });
 });
 
