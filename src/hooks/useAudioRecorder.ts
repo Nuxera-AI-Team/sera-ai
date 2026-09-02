@@ -21,6 +21,11 @@ export interface AudioRecorderHookProps {
   patientHistory?: string;
   patientDetails?: PatientDetails;
   selectedFormat?: "json" | "hl7" | "fhir";
+  /**
+   * Skip backend speaker (Doctor/Patient) labeling. Defaults to `true`.
+   * Applies to the v1 path only: the v2 chunk endpoint performs diarization and
+   * role labeling as its core function and does not read this flag.
+   */
   skipDiarization?: boolean;
   silenceRemoval?: boolean;
   /**
