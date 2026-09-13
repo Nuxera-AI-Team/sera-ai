@@ -1,12 +1,22 @@
 "use client";
 
 import * as React from "react";
+import { createVisualizerAudioGraph } from "./visualizerAudioGraph";
+import { resolveVisualizerSurface } from "./visualizerSurface";
 
-interface AudioVisualizerImprovedProps {
+export interface AudioVisualizerImprovedProps {
+  /** Live capture stream to analyse. Pass `null` to run the idle animation. */
   mediaStream: MediaStream | null;
   isRecording: boolean;
   forceLight?: boolean; // Add a prop to force light theme
   className?: string; // Custom class for the visualizer container
+  /**
+   * Surface painted behind the animation: any CSS colour, or "transparent" to
+   * let the host's own background show through. Defaults to following the
+   * host's light/dark theme (white or near-black) — set it when the host sits
+   * on a theme of its own.
+   */
+  background?: string;
 }
 
 // Color palette with complementary gradient stops for more sophisticated visuals
@@ -63,6 +73,7 @@ export default function AudioVisualizerImproved({
   isRecording,
   forceLight = true, // Default to light theme for login page
   className,
+  background,
 }: AudioVisualizerImprovedProps) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const animationFrameRef = React.useRef<number>(0);
@@ -103,16 +114,21 @@ export default function AudioVisualizerImproved({
   React.useEffect(() => {
     if (!canvasRef.current) return;
 
-    const audioContext = new AudioContext();
-    analyserRef.current = audioContext.createAnalyser();
-    analyserRef.current.fftSize = 512; // Increased for more detailed frequency analysis
-    const bufferLength = analyserRef.current.frequencyBinCount;
-    dataArrayRef.current = new Uint8Array(new ArrayBuffer(bufferLength));
+    // Resolved here rather than closed over from the render body so the loop
+    // can never paint a stale surface.
+    const drawSurface = resolveVisualizerSurface(background, isDarkMode);
 
-    if (mediaStream && isRecording) {
-      const source = audioContext.createMediaStreamSource(mediaStream);
-      source.connect(analyserRef.current);
-    }
+    // Only open an audio graph when there is a live signal to analyse — the
+    // idle animation runs off synthesized data and needs none. The graph is
+    // disposed in this effect's cleanup so its AudioContext doesn't outlive a
+    // recording (browsers cap how many a document may hold open, and this
+    // effect re-runs on every start/stop).
+    const graph =
+      mediaStream && isRecording
+        ? createVisualizerAudioGraph(mediaStream, 512) // detailed frequency analysis
+        : null;
+    analyserRef.current = graph?.analyser ?? null;
+    dataArrayRef.current = graph?.dataArray ?? null;
 
     // Create a pool of idle particles
     if (particlesRef.current.length === 0) {
@@ -217,14 +233,14 @@ export default function AudioVisualizerImproved({
     };
 
     const draw = () => {
-      if (!canvasRef.current || !analyserRef.current || !dataArrayRef.current) return;
+      if (!canvasRef.current) return;
 
       const now = Date.now();
       const deltaTime = (now - lastTimeRef.current) / 16.667; // Normalize to 60fps
       lastTimeRef.current = now;
 
       const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d", { alpha: false })!;
+      const ctx = canvas.getContext("2d", { alpha: drawSurface.transparent })!;
 
       // Set canvas dimensions to match container
       canvas.width = canvas.offsetWidth;
@@ -238,7 +254,7 @@ export default function AudioVisualizerImproved({
       let frequencyData: number[] = [];
       let suddenImpact = 0;
 
-      if (mediaStream && isRecording) {
+      if (mediaStream && isRecording && analyserRef.current && dataArrayRef.current) {
         analyserRef.current.getByteFrequencyData(dataArrayRef.current);
 
         // Create a normalized copy of the frequency data for easier use
@@ -265,9 +281,14 @@ export default function AudioVisualizerImproved({
       // Update time for animations (scaled by deltaTime)
       timeRef.current += 0.01 * deltaTime;
 
-      // Ensure white background in light mode, dark in dark mode
-      ctx.fillStyle = isDarkMode ? "#121826" : "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Lay down the surface the animation draws over — or clear the frame and
+      // let the host's own background show through.
+      if (drawSurface.fill === null) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.fillStyle = drawSurface.fill;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
 
       // Create multiple overlapping background gradients - only for dark mode
       const createDynamicBackground = () => {
@@ -585,8 +606,14 @@ export default function AudioVisualizerImproved({
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
+      // After the frame is cancelled, so no draw can read a torn-down analyser.
+      graph?.dispose();
+      analyserRef.current = null;
+      dataArrayRef.current = null;
     };
-  }, [mediaStream, isRecording, isDarkMode]);
+  }, [mediaStream, isRecording, isDarkMode, background]);
+
+  const surface = resolveVisualizerSurface(background, isDarkMode);
 
   return (
     <div className={`w-full flex justify-center items-center overflow-visible ${className || ""}`}>
@@ -594,27 +621,23 @@ export default function AudioVisualizerImproved({
         <div className="w-full h-full mx-auto relative">
           {/* Outer background circle */}
           <div
-            className={`absolute inset-0 rounded-full ${isDarkMode ? "bg-gray-900" : "bg-white"}`}
+            className="absolute inset-0 rounded-full"
             style={{
-              background: isDarkMode
-                ? "linear-gradient(135deg, rgba(17, 24, 39, 0.4) 0%, rgba(17, 24, 39, 0.2) 100%)"
-                : "white",
+              background: surface.discBackground,
               transform: "scale(1.08)",
               zIndex: -1,
-              boxShadow: isDarkMode
-                ? "inset 0 0 30px rgba(0, 0, 0, 0.5)"
-                : "inset 0 0 10px rgba(0, 0, 0, 0.05)",
+              boxShadow: surface.discShadow,
             }}
           ></div>
-          {/* Canvas for visualization */}
+          {/* Canvas for visualization. Keyed on transparency because a canvas
+              keeps the alpha setting it was first created with. */}
           <canvas
+            key={surface.transparent ? "alpha" : "opaque"}
             ref={canvasRef}
-            className={`w-full h-full rounded-full ${isDarkMode ? "bg-gray-900" : "bg-white"}`}
+            className="w-full h-full rounded-full"
             style={{
-              boxShadow: isDarkMode ? "inset 0 0 20px rgba(13, 18, 30, 0.8)" : "none",
-              background: isDarkMode
-                ? "linear-gradient(135deg, rgba(13, 18, 30, 1) 0%, rgba(13, 18, 30, 1) 100%)"
-                : "white",
+              boxShadow: surface.canvasShadow,
+              background: surface.canvasBackground,
             }}
           />
         </div>
