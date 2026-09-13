@@ -1,8 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { createVisualizerAudioGraph } from "./visualizerAudioGraph";
 
-interface AudioVisualizerImprovedProps {
+export interface AudioVisualizerImprovedProps {
+  /** Live capture stream to analyse. Pass `null` to run the idle animation. */
   mediaStream: MediaStream | null;
   isRecording: boolean;
   forceLight?: boolean; // Add a prop to force light theme
@@ -103,16 +105,17 @@ export default function AudioVisualizerImproved({
   React.useEffect(() => {
     if (!canvasRef.current) return;
 
-    const audioContext = new AudioContext();
-    analyserRef.current = audioContext.createAnalyser();
-    analyserRef.current.fftSize = 512; // Increased for more detailed frequency analysis
-    const bufferLength = analyserRef.current.frequencyBinCount;
-    dataArrayRef.current = new Uint8Array(new ArrayBuffer(bufferLength));
-
-    if (mediaStream && isRecording) {
-      const source = audioContext.createMediaStreamSource(mediaStream);
-      source.connect(analyserRef.current);
-    }
+    // Only open an audio graph when there is a live signal to analyse — the
+    // idle animation runs off synthesized data and needs none. The graph is
+    // disposed in this effect's cleanup so its AudioContext doesn't outlive a
+    // recording (browsers cap how many a document may hold open, and this
+    // effect re-runs on every start/stop).
+    const graph =
+      mediaStream && isRecording
+        ? createVisualizerAudioGraph(mediaStream, 512) // detailed frequency analysis
+        : null;
+    analyserRef.current = graph?.analyser ?? null;
+    dataArrayRef.current = graph?.dataArray ?? null;
 
     // Create a pool of idle particles
     if (particlesRef.current.length === 0) {
@@ -217,7 +220,7 @@ export default function AudioVisualizerImproved({
     };
 
     const draw = () => {
-      if (!canvasRef.current || !analyserRef.current || !dataArrayRef.current) return;
+      if (!canvasRef.current) return;
 
       const now = Date.now();
       const deltaTime = (now - lastTimeRef.current) / 16.667; // Normalize to 60fps
@@ -238,7 +241,7 @@ export default function AudioVisualizerImproved({
       let frequencyData: number[] = [];
       let suddenImpact = 0;
 
-      if (mediaStream && isRecording) {
+      if (mediaStream && isRecording && analyserRef.current && dataArrayRef.current) {
         analyserRef.current.getByteFrequencyData(dataArrayRef.current);
 
         // Create a normalized copy of the frequency data for easier use
@@ -585,6 +588,10 @@ export default function AudioVisualizerImproved({
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
+      // After the frame is cancelled, so no draw can read a torn-down analyser.
+      graph?.dispose();
+      analyserRef.current = null;
+      dataArrayRef.current = null;
     };
   }, [mediaStream, isRecording, isDarkMode]);
 

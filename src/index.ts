@@ -5,6 +5,12 @@ export type { AudioRecorderProps, APIResponse, APIOptions } from "./types";
 export type { AudioDictationProps } from "./AudioDictation";
 export type { AudioCaptureProps } from "./AudioCapture";
 
+// Canvas visualizer used by the recorder components, exported on its own so a
+// host driving capture through `useAudioRecorder` can render it over the
+// hook's `mediaStreamRef` without taking the components' UI.
+export { default as AudioVisualizerImproved } from "./components/AudioVisualizerImproved";
+export type { AudioVisualizerImprovedProps } from "./components/AudioVisualizerImproved";
+
 // Headless recorder hook — drive the audio→transcript pipeline from a custom UI
 // (e.g. a browser-extension side panel). Owns capture, chunking, compression /
 // silence removal, upload, and transcript/note assembly. Supports the v1 and v2
