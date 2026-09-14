@@ -69,5 +69,15 @@ export default [
       ],
     },
   },
+  {
+    // Test doubles for Web APIs the runtime provides — IndexedDB requests,
+    // AudioContext nodes, hook returns captured out of act() — are shaped by
+    // what a test asserts, not by a contract worth naming. `any` is the point
+    // there. Production code stays under the rule.
+    files: ["src/__tests__/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
   prettier,
 ];

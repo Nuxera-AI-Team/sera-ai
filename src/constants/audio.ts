@@ -62,6 +62,17 @@ export const MAX_SILENCE_DURATION_SECONDS = 30;
 export const INITIAL_SILENCE_THRESHOLD_SECONDS = 10;
 
 /**
+ * Consecutive above-threshold render quanta before the input counts as live.
+ *
+ * A render quantum is 128 frames — 8ms at 16kHz — and a single loud one is as
+ * likely to be a click, a knock, or electrical noise as speech. Treating one as
+ * audio used to clear the silence counter outright, so an input delivering the
+ * odd blip and nothing else was never reported as dead. Speech clears three in
+ * a row trivially; an isolated click does not.
+ */
+export const SUSTAINED_AUDIO_QUANTA = 3;
+
+/**
  * Calculate samples from seconds using the provided sample rate.
  * @param seconds - Duration in seconds
  * @param sampleRate - The sample rate in Hz (required)
