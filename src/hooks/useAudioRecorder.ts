@@ -4,7 +4,11 @@ import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
 import { ClassificationInfoResponse, PatientDetails } from "../types";
-import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
+import {
+  isValidSampleRate,
+  InvalidSampleRateError,
+  AUDIO_SILENCE_THRESHOLD,
+} from "../constants/audio";
 import {
   postTranscribeV2Chunk,
   postMedicalNote,
@@ -90,6 +94,23 @@ export interface AudioRecorderHookProps {
    */
   captureSampleRate?: number;
   /**
+   * Seconds of silence, before ANY audio has been heard, after which the input
+   * is treated as dead: the hook raises noAudioDetected and stops the recording.
+   * Defaults to 10.
+   *
+   * Widen it for a host whose users routinely open a session without speaking —
+   * with noiseSuppression active the room's own floor can sit under the silence
+   * threshold for that whole stretch, and the recording would end before they
+   * ever started.
+   */
+  initialSilenceSeconds?: number;
+  /**
+   * Seconds of silence AFTER audio has been heard before prolongedSilence is
+   * raised. Defaults to 30. This never stops the recording — a quiet stretch
+   * mid-session is normal — so it is only a signal for the host to warn on.
+   */
+  prolongedSilenceSeconds?: number;
+  /**
    * v2 only: skip the finalize POST /api/transcribe/medical-note call. Use when
    * the host already owns note generation (e.g. it regenerates the note from a
    * combined transcript across recordings). onTranscriptionComplete then fires
@@ -121,7 +142,10 @@ export interface UseAudioRecorderReturn {
   selectMicrophone: (deviceId: string) => Promise<void>;
   validateMicrophoneAccess: () => Promise<boolean>;
   audioLevel: number;
+  /** Nothing ever reached the input, and recording has been stopped. */
   noAudioDetected: boolean;
+  /** A working input has gone quiet for a while. Recording continues. */
+  prolongedSilence: boolean;
 
   // Recovery-related properties
   showRetrySessionPrompt: boolean;
@@ -160,14 +184,26 @@ const createAudioProcessorWorker = () => {
         this._audioLevelCheckInterval = 0;
         this._audioLevelCheckFrequency = 128;
         this._silentSampleCount = 0;
-        this._maxSilentSamples = this._sampleRate * 30;
+        this._maxSilentSamples =
+          this._sampleRate * (options?.processorOptions?.prolongedSilenceSeconds || 30);
         this._audioThreshold = 0.002; // Increased from 0.001 to better detect speech
         this._hasDetectedAudio = false;
         this._totalSilentTime = 0;
         this._lastAudioTime = 0;
         this._recordingStartTime = Date.now();
-        this._initialSilenceThreshold = this._sampleRate * 10;
+        // A host whose clinicians routinely open a visit in silence can widen
+        // these rather than fork the worklet; both default to the package values.
+        this._initialSilenceThreshold =
+          this._sampleRate * (options?.processorOptions?.initialSilenceSeconds || 10);
         this._isInitialPhase = true;
+        // Consecutive above-threshold quanta seen so far, and how many it takes to
+        // call the input live. One loud quantum is as likely to be a click or a
+        // knock as speech.
+        this._consecutiveAudioQuanta = 0;
+        this._sustainedAudioQuanta = 3;
+        // Each signal is reported once per stretch, not once per render quantum.
+        this._noAudioReported = false;
+        this._silenceReported = false;
         this._bufferSize = 0; // Track total samples in buffer
 
         this.port.onmessage = (event) => {
@@ -257,25 +293,49 @@ const createAudioProcessorWorker = () => {
           }
 
           if (audioLevel > this._audioThreshold) {
-            this._hasDetectedAudio = true;
-            this._isInitialPhase = false;
-            this._silentSampleCount = 0;
-            this._lastAudioTime = Date.now();
-          } else {
-            this._silentSampleCount += samples.length;
-            
-            if (this._isInitialPhase && this._silentSampleCount > this._initialSilenceThreshold) {
-              this.port.postMessage({
-                command: "noAudioDetected",
-                message: "No audio input detected after 10 seconds. Please check your microphone."
-              });
-              return true;
+            // A single loud quantum used to clear the silence counter outright, so an
+            // input emitting the odd electrical blip was never reported dead — the one
+            // failure this check exists to catch was the one it reliably missed.
+            this._consecutiveAudioQuanta++;
+            if (this._consecutiveAudioQuanta >= this._sustainedAudioQuanta) {
+              this._hasDetectedAudio = true;
+              this._isInitialPhase = false;
+              this._silentSampleCount = 0;
+              this._lastAudioTime = Date.now();
+              this._silenceReported = false;
+            } else {
+              this._silentSampleCount += samples.length;
             }
-            
-            if (this._hasDetectedAudio && this._silentSampleCount > this._maxSilentSamples) {
+          } else {
+            this._consecutiveAudioQuanta = 0;
+            this._silentSampleCount += samples.length;
+            const silentDuration = this._silentSampleCount / this._sampleRate;
+
+            if (this._isInitialPhase) {
+              // Nothing has ever arrived, so there is nothing to capture and the
+              // consumer is expected to stop the recording on this.
+              if (!this._noAudioReported && this._silentSampleCount > this._initialSilenceThreshold) {
+                this._noAudioReported = true;
+                this.port.postMessage({
+                  command: "noAudioDetected",
+                  message: "No audio input detected after " + Math.round(silentDuration) + " seconds. Please check your microphone.",
+                  silentDuration: silentDuration,
+                  isInitialPhase: true,
+                  hasDetectedAudio: false
+                });
+              }
+            } else if (!this._silenceReported && this._silentSampleCount > this._maxSilentSamples) {
+              // The input works and simply went quiet. This must NOT stop the
+              // recording: a quiet examination mid-consultation is normal, and
+              // answering it with noAudioDetected cost the clinician the rest of
+              // the visit.
+              this._silenceReported = true;
               this.port.postMessage({
-                command: "noAudioDetected",
-                message: "No audio detected for 30 seconds. Recording may have issues."
+                command: "prolongedSilence",
+                message: "No audio detected for " + Math.round(silentDuration) + " seconds.",
+                silentDuration: silentDuration,
+                isInitialPhase: false,
+                hasDetectedAudio: true
               });
             }
           }
@@ -349,6 +409,8 @@ const useAudioRecorder = ({
   doctorName: doctorNameProp,
   skipNoteGeneration = false,
   captureSampleRate,
+  initialSilenceSeconds,
+  prolongedSilenceSeconds,
   chunkFormat = "wav",
   opusWorkerUrl,
   onTranscriptionUpdate,
@@ -367,6 +429,7 @@ const useAudioRecorder = ({
   // Add new state for audio monitoring
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [noAudioDetected, setNoAudioDetected] = useState(false);
+  const [prolongedSilence, setProlongedSilence] = useState(false);
 
   const audioSamplesRef = useRef<Float32Array[]>([]);
   const mediaStreamRef = React.useRef<MediaStream | null>(null);
@@ -1214,6 +1277,7 @@ const useAudioRecorder = ({
       // Clear any previous errors
       setError(null);
       setNoAudioDetected(false);
+      setProlongedSilence(false);
 
       // Pre-flight microphone check
       const micValid = await validateMicrophoneAccess();
@@ -1310,7 +1374,11 @@ const useAudioRecorder = ({
       if (usingBlobWorklet) URL.revokeObjectURL(processorUrl);
 
       const processor = new AudioWorkletNode(audioContext, "audio-processor", {
-        processorOptions: { sampleRate: audioContext.sampleRate },
+        processorOptions: {
+          sampleRate: audioContext.sampleRate,
+          initialSilenceSeconds,
+          prolongedSilenceSeconds,
+        },
       });
 
       processor.port.onmessage = (event) => {
@@ -1319,8 +1387,6 @@ const useAudioRecorder = ({
           audioBuffer,
           level,
           silentDuration,
-          hasDetectedAudio,
-          isInitialPhase,
         } = event.data;
 
         // Handle chunk messages (increment sequence only for actual chunks)
@@ -1339,23 +1405,27 @@ const useAudioRecorder = ({
           enqueueChunk(new Float32Array(audioBuffer), false, sequence, true);
         } else if (command === "audioLevel") {
           setAudioLevel(level);
+          // Audio is arriving again, so any standing quiet-stretch warning is
+          // stale. The worklet re-arms its own latch on the same condition.
+          if (level > AUDIO_SILENCE_THRESHOLD) setProlongedSilence(false);
         } else if (command === "prolongedSilence") {
+          // The input works and simply went quiet. Surfaced for the consumer to
+          // warn on, and deliberately NOT stopped: a quiet examination
+          // mid-consultation is normal, and stopping on it used to cost the
+          // clinician the rest of the visit.
           console.warn(`[SERA] Prolonged silence: ${Math.round(silentDuration)}s`);
+          setProlongedSilence(true);
         } else if (command === "noAudioDetected") {
+          // Nothing has EVER arrived — the input is dead, so there is nothing to
+          // capture and stopping is the honest answer. The worklet only raises
+          // this while isInitialPhase holds; a live input that goes quiet comes
+          // through prolongedSilence above instead.
           setNoAudioDetected(true);
-
-          let errorMessage;
-          if (isInitialPhase && !hasDetectedAudio) {
-            errorMessage = `No audio input detected for ${Math.round(
+          setError(
+            `No audio input detected for ${Math.round(
               silentDuration
-            )} seconds. Please check your microphone setup.`;
-          } else {
-            errorMessage = `Extended silence detected (${Math.round(
-              silentDuration
-            )} seconds). Recording has been stopped.`;
-          }
-
-          setError(errorMessage);
+            )} seconds. Please check your microphone setup.`
+          );
           stopRecording();
         }
       };
@@ -1538,6 +1608,7 @@ const useAudioRecorder = ({
     setIsPaused(false);
     setIsRecording(true);
     setNoAudioDetected(false); // Reset no audio detection when resuming
+    setProlongedSilence(false);
 
     // Resume the worklet processor
     if (processorRef.current) {
@@ -1662,6 +1733,7 @@ const useAudioRecorder = ({
     // Add audio monitoring properties
     audioLevel,
     noAudioDetected,
+    prolongedSilence,
     // Add recovery-related properties
     showRetrySessionPrompt,
     isRetryingSession,

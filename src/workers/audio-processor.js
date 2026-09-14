@@ -21,14 +21,26 @@ class AudioProcessor extends AudioWorkletProcessor {
     this._audioLevelCheckInterval = 0;
     this._audioLevelCheckFrequency = 128;
     this._silentSampleCount = 0;
-    this._maxSilentSamples = this._sampleRate * 30;
+    this._maxSilentSamples =
+      this._sampleRate * (options?.processorOptions?.prolongedSilenceSeconds || 30);
     this._audioThreshold = 0.002; // Increased from 0.001 to better detect speech
     this._hasDetectedAudio = false;
     this._totalSilentTime = 0;
     this._lastAudioTime = 0;
     this._recordingStartTime = Date.now();
-    this._initialSilenceThreshold = this._sampleRate * 10;
+    // A host whose clinicians routinely open a visit in silence can widen
+    // these rather than fork the worklet; both default to the package values.
+    this._initialSilenceThreshold =
+      this._sampleRate * (options?.processorOptions?.initialSilenceSeconds || 10);
     this._isInitialPhase = true;
+    // Consecutive above-threshold quanta seen so far, and how many it takes to
+    // call the input live. One loud quantum is as likely to be a click or a
+    // knock as speech.
+    this._consecutiveAudioQuanta = 0;
+    this._sustainedAudioQuanta = 3;
+    // Each signal is reported once per stretch, not once per render quantum.
+    this._noAudioReported = false;
+    this._silenceReported = false;
     this._bufferSize = 0; // Track total samples in buffer
 
     this.port.onmessage = (event) => {
@@ -117,25 +129,49 @@ class AudioProcessor extends AudioWorkletProcessor {
       }
 
       if (audioLevel > this._audioThreshold) {
-        this._hasDetectedAudio = true;
-        this._isInitialPhase = false;
-        this._silentSampleCount = 0;
-        this._lastAudioTime = Date.now();
-      } else {
-        this._silentSampleCount += samples.length;
-
-        if (this._isInitialPhase && this._silentSampleCount > this._initialSilenceThreshold) {
-          this.port.postMessage({
-            command: "noAudioDetected",
-            message: "No audio input detected after 10 seconds. Please check your microphone."
-          });
-          return true;
+        // A single loud quantum used to clear the silence counter outright, so an
+        // input emitting the odd electrical blip was never reported dead — the one
+        // failure this check exists to catch was the one it reliably missed.
+        this._consecutiveAudioQuanta++;
+        if (this._consecutiveAudioQuanta >= this._sustainedAudioQuanta) {
+          this._hasDetectedAudio = true;
+          this._isInitialPhase = false;
+          this._silentSampleCount = 0;
+          this._lastAudioTime = Date.now();
+          this._silenceReported = false;
+        } else {
+          this._silentSampleCount += samples.length;
         }
+      } else {
+        this._consecutiveAudioQuanta = 0;
+        this._silentSampleCount += samples.length;
+        const silentDuration = this._silentSampleCount / this._sampleRate;
 
-        if (this._hasDetectedAudio && this._silentSampleCount > this._maxSilentSamples) {
+        if (this._isInitialPhase) {
+          // Nothing has ever arrived, so there is nothing to capture and the
+          // consumer is expected to stop the recording on this.
+          if (!this._noAudioReported && this._silentSampleCount > this._initialSilenceThreshold) {
+            this._noAudioReported = true;
+            this.port.postMessage({
+              command: "noAudioDetected",
+              message: "No audio input detected after " + Math.round(silentDuration) + " seconds. Please check your microphone.",
+              silentDuration: silentDuration,
+              isInitialPhase: true,
+              hasDetectedAudio: false
+            });
+          }
+        } else if (!this._silenceReported && this._silentSampleCount > this._maxSilentSamples) {
+          // The input works and simply went quiet. This must NOT stop the
+          // recording: a quiet examination mid-consultation is normal, and
+          // answering it with noAudioDetected cost the clinician the rest of
+          // the visit.
+          this._silenceReported = true;
           this.port.postMessage({
-            command: "noAudioDetected",
-            message: "No audio detected for 30 seconds. Recording may have issues."
+            command: "prolongedSilence",
+            message: "No audio detected for " + Math.round(silentDuration) + " seconds.",
+            silentDuration: silentDuration,
+            isInitialPhase: false,
+            hasDetectedAudio: true
           });
         }
       }
