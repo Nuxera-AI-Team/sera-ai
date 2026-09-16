@@ -45,7 +45,8 @@ export interface AudioRecorderHookProps {
   /**
    * Location of the ffmpeg-wasm core. Hosts under a strict CSP (e.g. an MV3
    * browser extension, where remote script loading is blocked) must pass a
-   * locally-bundled URL. Defaults to a CDN when omitted.
+   * locally-bundled URL. When omitted, @ffmpeg/ffmpeg's own default applies —
+   * its matching core on unpkg — so this package never names a CDN itself.
    */
   corePath?: string;
   /**

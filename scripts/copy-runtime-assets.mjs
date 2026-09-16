@@ -5,8 +5,9 @@
 // Hosts under a strict CSP (an MV3 browser extension) load these from packaged
 // chrome-extension:// URLs. Runs from tsup's onSuccess.
 //
-// NOTE: the ffmpeg-wasm core is intentionally NOT shipped — web hosts use the
-// CDN default (see useFFmpegConverter), and the extension runs without ffmpeg.
+// NOTE: the ffmpeg-wasm core is intentionally NOT shipped — web hosts fall back
+// to @ffmpeg/ffmpeg's own CDN default (see useFFmpegConverter, which names no
+// core URL of its own), and the extension runs without ffmpeg.
 // Bundling the 24 MB core in the npm package was dead weight for both.
 
 import { mkdirSync, copyFileSync, existsSync } from "node:fs";
