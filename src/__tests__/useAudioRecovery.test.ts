@@ -80,6 +80,10 @@ const createMockDB = () => ({
 
 let mockDB: ReturnType<typeof createMockDB>;
 
+// Chunks registered here fail to decode, letting a test simulate a corrupt
+// chunk without having to reach into the worker itself.
+let undecodableChunks: Set<string>;
+
 // Mock Worker
 class MockWorker {
   onmessage: ((e: MessageEvent) => void) | null = null;
@@ -98,6 +102,16 @@ class MockWorker {
           },
         } as any);
       } else if (data.command === 'decodeBase64ToFloat32') {
+        if (undecodableChunks.has(data.data.base64Data)) {
+          this.onmessage?.({
+            data: {
+              type: 'error',
+              id: data.id,
+              error: 'Simulated decode failure',
+            },
+          } as any);
+          return;
+        }
         // Return a simple array
         this.onmessage?.({
           data: {
@@ -134,6 +148,21 @@ type ReprocessSessionFn = (
   }
 ) => Promise<void>;
 
+const buildSession = (id: string, chunks: string[]) => ({
+  id,
+  status: 'failed',
+  audioChunks: Object.fromEntries(chunks.map((chunk, index) => [index, chunk])),
+  metadata: {
+    speciality: 'general',
+    sampleRate: 44100,
+    timestamp: Date.now(),
+    totalChunks: chunks.length,
+    completedChunks: chunks.length,
+    chunkIndices: chunks.map((_, index) => index),
+  },
+  retryCount: 0,
+});
+
 describe('useAudioRecovery', () => {
   const mockReprocessSession = vi.fn<ReprocessSessionFn>(() => Promise.resolve());
 
@@ -141,6 +170,7 @@ describe('useAudioRecovery', () => {
     vi.clearAllMocks();
     mockStoreData = new Map();
     mockDB = createMockDB();
+    undecodableChunks = new Set();
     mockReprocessSession.mockClear();
 
     // Mock indexedDB
@@ -394,6 +424,68 @@ describe('useAudioRecovery', () => {
       // The reprocessSession callback should be called
       // (may not be reached due to mock complexity, but the function should not throw)
       expect(globalThis.indexedDB.open).toHaveBeenCalled();
+    });
+
+    it('should resend every chunk when all of them decode', async () => {
+      const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
+
+      mockStoreData.set('session-intact', buildSession('session-intact', [
+        'chunk-0',
+        'chunk-1',
+        'chunk-2',
+      ]));
+
+      let retryResult: boolean = false;
+      await act(async () => {
+        retryResult = await result.current.retrySession('session-intact');
+      });
+
+      expect(retryResult).toBe(true);
+      expect(mockReprocessSession).toHaveBeenCalledTimes(1);
+      expect(mockReprocessSession.mock.calls[0][0]).toHaveLength(3);
+    });
+
+    // Regression: a chunk that fails to decode used to be logged and skipped, so
+    // retrySession resent a recording with a hole in it and reported success —
+    // which let the caller delete the only remaining copy of the full audio.
+    it('should fail the retry when any chunk cannot be decoded', async () => {
+      const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
+
+      undecodableChunks.add('chunk-1');
+      mockStoreData.set('session-partial', buildSession('session-partial', [
+        'chunk-0',
+        'chunk-1',
+        'chunk-2',
+      ]));
+
+      let retryResult: boolean = true;
+      await act(async () => {
+        retryResult = await result.current.retrySession('session-partial');
+      });
+
+      expect(retryResult).toBe(false);
+      expect(mockReprocessSession).not.toHaveBeenCalled();
+    });
+
+    it('should keep the stored session when a chunk cannot be decoded', async () => {
+      const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
+
+      undecodableChunks.add('chunk-1');
+      mockStoreData.set('session-partial', buildSession('session-partial', [
+        'chunk-0',
+        'chunk-1',
+        'chunk-2',
+      ]));
+
+      await act(async () => {
+        await result.current.retrySession('session-partial');
+      });
+
+      // The audio is the only copy left; a failed retry must not discard it.
+      expect(mockStoreData.has('session-partial')).toBe(true);
+      expect(
+        Object.keys(mockStoreData.get('session-partial').audioChunks)
+      ).toHaveLength(3);
     });
   });
 

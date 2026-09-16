@@ -144,11 +144,6 @@ const useFFmpegConverter = (
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
 
-  // Default core location. Hosts that run under a strict CSP (e.g. an MV3
-  // browser extension, where remote script loading is blocked) must pass a
-  // locally-bundled `corePath` — see the `corePath` prop on useAudioRecorder.
-  const DEFAULT_CDN_CORE_PATH = "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js";
-
   const loadFFmpeg = useCallback(async (overridePath?: string): Promise<boolean> => {
     // Already loaded
     if (ffmpegInstance) {
@@ -170,12 +165,18 @@ const useFFmpegConverter = (
     // Start loading
     ffmpegLoadingPromise = (async () => {
       try {
-        const resolvedCorePath = overridePath || corePathRef.current || DEFAULT_CDN_CORE_PATH;
-        console.log(`[SERA] FFmpeg loading | corePath=${resolvedCorePath}`);
+        const resolvedCorePath = overridePath || corePathRef.current;
+        console.log(`[SERA] FFmpeg loading | corePath=${resolvedCorePath ?? "package default"}`);
         setStatusMessage("Loading FFmpeg...");
         const ffmpeg = createFFmpeg({
           log: false,
-          corePath: resolvedCorePath,
+          // Only name a core when the host chose one. Naming a CDN default here
+          // would put a remotely hosted script URL in every consumer's bundle,
+          // which the Chrome Web Store rejects for MV3 extensions — even when
+          // the code never runs. Left unset, @ffmpeg/ffmpeg applies its own
+          // default (the matching @ffmpeg/core on unpkg) for web hosts, while a
+          // host that excludes the package from its build carries no URL at all.
+          ...(resolvedCorePath ? { corePath: resolvedCorePath } : {}),
           progress: ({ ratio }) => {
             setProgress(Math.round(ratio * 100));
           },
@@ -186,7 +187,7 @@ const useFFmpegConverter = (
         setFfmpegLoaded(true);
         setIsLoaded(true);
         setStatusMessage("");
-        console.log("[SERA] FFmpeg WASM loaded successfully from CDN");
+        console.log("[SERA] FFmpeg WASM loaded successfully");
         return true;
       } catch (err) {
         console.error("[SERA] FFmpeg loading failed:", err);
