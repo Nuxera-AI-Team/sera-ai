@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const hooksDir = join(__dirname, '..', 'hooks');
 
 // Hoisted mock functions for @ffmpeg/ffmpeg
 const mockFFmpegFns = vi.hoisted(() => ({
@@ -242,6 +246,56 @@ describe('useFFmpegConverter', () => {
     it('should be a callable function', () => {
       const { result } = renderHook(() => useFFmpegConverter());
       expect(typeof result.current.convertToFlac).toBe('function');
+    });
+  });
+
+  // The library must not name a core URL of its own. An MV3 extension bundling
+  // this package inherits every URL in it, and the Chrome Web Store rejects a
+  // submission that carries a remotely hosted script — even one it never runs.
+  // Leaving corePath unset hands the decision to @ffmpeg/ffmpeg, whose own
+  // default resolves to the same CDN core for web hosts.
+  describe('core location', () => {
+    // The hook keeps its ffmpeg instance in module state, so each case needs a
+    // fresh module graph to reach the loading path at all.
+    const freshHook = async () => {
+      vi.resetModules();
+      const { createFFmpeg } = await import('@ffmpeg/ffmpeg');
+      const hook = (await import('../hooks/useFFmpegConverter')).default;
+      return { hook, createFFmpeg: createFFmpeg as unknown as ReturnType<typeof vi.fn> };
+    };
+
+    it('leaves the core location to @ffmpeg/ffmpeg when the host passes none', async () => {
+      const { hook, createFFmpeg } = await freshHook();
+      const { result } = renderHook(() => hook());
+
+      await act(async () => {
+        await result.current.loadFFmpeg();
+      });
+
+      expect(createFFmpeg).toHaveBeenCalledTimes(1);
+      expect(createFFmpeg.mock.calls[0][0]).not.toHaveProperty('corePath');
+    });
+
+    it('uses the locally-bundled core a CSP-bound host passes', async () => {
+      const { hook, createFFmpeg } = await freshHook();
+      const bundledCore = 'chrome-extension://abc/ffmpeg-core.js';
+      const { result } = renderHook(() => hook(bundledCore));
+
+      await act(async () => {
+        await result.current.loadFFmpeg();
+      });
+
+      expect(createFFmpeg.mock.calls[0][0]).toMatchObject({ corePath: bundledCore });
+    });
+
+    it('ships no CDN URL of its own', () => {
+      const sources = readdirSync(hooksDir)
+        .filter((file) => file.endsWith('.ts'))
+        .map((file) => readFileSync(join(hooksDir, file), 'utf8'));
+
+      for (const source of sources) {
+        expect(source).not.toMatch(/https?:\/\/(?:unpkg\.com|cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com)/);
+      }
     });
   });
 });
