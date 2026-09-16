@@ -559,7 +559,15 @@ const useAudioRecovery = (
             const float32Array = await decodeInWorker(base64Data);
             audioChunks.push(float32Array);
           } catch (error) {
-            console.error(`[SERA] Failed to decode audio chunk | index=${index}:`, error);
+            // Fail the whole retry rather than resending what did decode. A
+            // partial resend would produce a note with a silent gap, and the
+            // caller deletes the stored session once a retry reports success —
+            // destroying the only remaining copy of the missing audio.
+            console.error(
+              `[SERA] Failed to decode audio chunk, abandoning retry | index=${index}, chunks=${chunkIndices.length}:`,
+              error
+            );
+            return false;
           }
         }
 

@@ -30,17 +30,20 @@ vi.mock('../hooks/useFFmpegConverter', () => ({
   }),
 }));
 
+const mockRecoveryFns = vi.hoisted(() => ({
+  createSession: vi.fn(() => Promise.resolve()),
+  appendAudioToSession: vi.fn(() => Promise.resolve()),
+  markSessionComplete: vi.fn(() => Promise.resolve()),
+  markSessionFailed: vi.fn(() => Promise.resolve()),
+  retrySession: vi.fn((_sessionId: string) => Promise.resolve(true)),
+  deleteSession: vi.fn((_sessionId: string) => Promise.resolve()),
+  getFailedSession: vi.fn((): Promise<{ id: string } | null> => Promise.resolve(null)),
+  clearFailedSessions: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../hooks/useAudioRecovery', () => ({
-  default: (_callback: (audioChunks: Float32Array[], metadata: Record<string, unknown>) => Promise<void>) => ({
-    createSession: vi.fn(() => Promise.resolve()),
-    appendAudioToSession: vi.fn(() => Promise.resolve()),
-    markSessionComplete: vi.fn(() => Promise.resolve()),
-    markSessionFailed: vi.fn(() => Promise.resolve()),
-    retrySession: vi.fn(() => Promise.resolve(true)),
-    deleteSession: vi.fn(() => Promise.resolve()),
-    getFailedSession: vi.fn(() => Promise.resolve(null)),
-    clearFailedSessions: vi.fn(() => Promise.resolve()),
-  }),
+  default: (_callback: (audioChunks: Float32Array[], metadata: Record<string, unknown>) => Promise<void>) =>
+    mockRecoveryFns,
 }));
 
 vi.mock('../hooks/useHL7FHIRConverter', () => ({
@@ -64,6 +67,11 @@ const defaultProps = {
 describe('useAudioRecorder', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    // The recovery mocks are shared across tests, so restore their defaults
+    mockRecoveryFns.retrySession.mockResolvedValue(true);
+    mockRecoveryFns.deleteSession.mockResolvedValue(undefined);
+    mockRecoveryFns.getFailedSession.mockResolvedValue(null);
 
     // Reset mediaDevices mock to default successful behavior
     mockMediaDevices.enumerateDevices.mockResolvedValue([
@@ -491,6 +499,36 @@ describe('useAudioRecorder', () => {
       });
 
       expect(result.current.showRetrySessionPrompt).toBe(false);
+    });
+
+    it('should delete the stored session once a retry succeeds', async () => {
+      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: 'session-1' });
+      mockRecoveryFns.retrySession.mockResolvedValue(true);
+
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.retryFailedSession();
+      });
+
+      expect(mockRecoveryFns.deleteSession).toHaveBeenCalledWith('session-1');
+      expect(result.current.showRetrySessionPrompt).toBe(false);
+    });
+
+    // Regression: the stored audio is the only remaining copy, so a retry that
+    // could not rebuild the full recording must leave it on disk.
+    it('should keep the stored session when a retry fails', async () => {
+      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: 'session-1' });
+      mockRecoveryFns.retrySession.mockResolvedValue(false);
+
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.retryFailedSession();
+      });
+
+      expect(mockRecoveryFns.deleteSession).not.toHaveBeenCalled();
+      expect(result.current.showRetrySessionPrompt).toBe(true);
     });
   });
 
