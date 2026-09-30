@@ -51,6 +51,19 @@ export interface AudioRecorderProps {
   selectedFormat?: "json" | "hl7" | "fhir";
 
   /**
+   * How often a chunk is cut and uploaded, in milliseconds (optional, defaults
+   * to 47000). Clamped to [30000, 120000].
+   *
+   * The server accepts at most 120 chunks per v1 session, so this value times
+   * 120 is the longest recording that is fully captured.
+   *
+   * The server receives whatever this timer produced and cannot ask for audio
+   * sooner, so this is the only place the cadence can be set. See
+   * `chunkDurationMs` on AudioRecorderHookProps for the trade-offs.
+   */
+  chunkDurationMs?: number;
+
+  /**
    * Callback function called on transcription updates (optional)
    */
   onTranscriptionUpdate?: (text: string, sessionId: string) => void;

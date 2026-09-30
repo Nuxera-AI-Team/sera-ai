@@ -455,6 +455,37 @@ describe('useAudioRecorder', () => {
     });
   });
 
+  describe('chunkDurationMs', () => {
+    it('uses the host value for the upload timer on start and on resume', async () => {
+      const setIntervalSpy = vi.spyOn(window, 'setInterval');
+      const { result } = renderHook(() =>
+        useAudioRecorder({ ...defaultProps, chunkDurationMs: 20000 })
+      );
+      // 20000 is below the floor, so the timer must run at the clamped 30000
+      // — and must not fall back to the 47000 default anywhere.
+      const uploadDelays = () =>
+        setIntervalSpy.mock.calls
+          .map((call) => call[1])
+          .filter((delay) => delay === 30000 || delay === 47000);
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      await waitFor(() => expect(result.current.isRecording).toBe(true));
+
+      act(() => {
+        result.current.pauseRecording();
+      });
+      await waitFor(() => expect(result.current.isPaused).toBe(true));
+
+      act(() => {
+        result.current.resumeRecording();
+      });
+
+      expect(uploadDelays()).toEqual([30000, 30000]);
+    });
+  });
+
   describe('clearAllSessions', () => {
     it('should clear failed sessions and hide retry prompt', async () => {
       const { result } = renderHook(() => useAudioRecorder(defaultProps));
