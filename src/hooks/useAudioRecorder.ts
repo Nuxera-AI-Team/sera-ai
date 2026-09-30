@@ -16,6 +16,38 @@ import {
 } from "../lib/transcribeV2";
 import { encodePcmToOpus } from "../lib/opusEncoder";
 
+/**
+ * How often a chunk is cut and uploaded when the host says nothing. Matches
+ * useAudioCapture's own default.
+ */
+export const DEFAULT_CHUNK_DURATION_MS = 30_000;
+
+/**
+ * Below this the request rate stops being worth the latency it buys, and the
+ * overlap a server may prepend starts to dominate each chunk.
+ */
+const MIN_CHUNK_DURATION_MS = 10_000;
+
+/**
+ * Above this a failed upload costs more audio than a consultation can afford to
+ * lose, and the first transcript arrives too late to be worth showing.
+ */
+const MAX_CHUNK_DURATION_MS = 120_000;
+
+/**
+ * A host passing something unusable — NaN from an unparsed env var, 0, a
+ * negative — gets the default rather than a recording that never chunks or
+ * chunks every render. Out-of-range values are clamped rather than rejected,
+ * because refusing to record is a worse answer than recording at the nearest
+ * sane cadence.
+ */
+export const resolveChunkDurationMs = (value: number | undefined): number => {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_CHUNK_DURATION_MS;
+  }
+  return Math.min(Math.max(value, MIN_CHUNK_DURATION_MS), MAX_CHUNK_DURATION_MS);
+};
+
 export interface AudioRecorderHookProps {
   apiKey: string;
   apiBaseUrl?: string;
@@ -111,6 +143,23 @@ export interface AudioRecorderHookProps {
    * mid-session is normal — so it is only a signal for the host to warn on.
    */
   prolongedSilenceSeconds?: number;
+  /**
+   * How often a chunk is cut and uploaded, in milliseconds. Defaults to 30000.
+   *
+   * This is the only place the cadence can be set. The server receives whatever
+   * the timer produced and cannot ask for audio sooner, so it can transform a
+   * chunk but never change when one arrives.
+   *
+   * Shorter means the transcript appears sooner and a failed upload costs less
+   * audio; it also multiplies requests, and every cut is another chance to split
+   * a word in half. Where the server prepends the previous chunk's tail
+   * (CHUNK_OVERLAP_SECONDS) that overlap must stay small against this value, or
+   * a large share of every chunk is audio the model has already heard.
+   *
+   * Clamped to [10000, 120000]. Applied on the next start or resume; changing it
+   * mid-recording does not disturb the timer already running.
+   */
+  chunkDurationMs?: number;
   /**
    * v2 only: skip the finalize POST /api/transcribe/medical-note call. Use when
    * the host already owns note generation (e.g. it regenerates the note from a
@@ -414,9 +463,14 @@ const useAudioRecorder = ({
   prolongedSilenceSeconds,
   chunkFormat = "wav",
   opusWorkerUrl,
+  chunkDurationMs = DEFAULT_CHUNK_DURATION_MS,
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
+  // Resolved once per render rather than at each call site, so start and resume
+  // cannot drift apart — a paused consultation silently reverting to a
+  // different cadence than it started with is the failure this guards against.
+  const chunkIntervalMs = resolveChunkDurationMs(chunkDurationMs);
   const [uploadChunkInterval, setUploadChunkInterval] = useState<number | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -1450,7 +1504,7 @@ const useAudioRecorder = ({
 
       const intervalId = window.setInterval(() => {
         processorRef.current?.port.postMessage({ command: "uploadChunk" });
-      }, 47000);
+      }, chunkIntervalMs);
       setUploadChunkInterval(intervalId);
     } catch (err) {
       console.error("[SERA] Recording start failed:", err);
@@ -1465,6 +1519,7 @@ const useAudioRecorder = ({
     speciality,
     currentDeviceId,
     captureSampleRate,
+    chunkIntervalMs,
   ]);
 
   const stopRecording = React.useCallback(async () => {
@@ -1616,12 +1671,14 @@ const useAudioRecorder = ({
       processorRef.current.port.postMessage({ command: "resume" });
     }
 
-    // Restart the upload chunk timer
+    // Restart the upload chunk timer, at the same cadence the recording
+    // started with — a resumed consultation that chunks differently from the
+    // first half is the bug this shares chunkIntervalMs to avoid.
     const intervalId = window.setInterval(() => {
       processorRef.current?.port.postMessage({ command: "uploadChunk" });
-    }, 47000);
+    }, chunkIntervalMs);
     setUploadChunkInterval(intervalId);
-  }, [isPaused]);
+  }, [isPaused, chunkIntervalMs]);
 
   const processNextChunkInQueue = React.useCallback(async () => {
     // Don't process if already processing or queue is empty
