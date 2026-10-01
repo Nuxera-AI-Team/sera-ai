@@ -46,13 +46,20 @@ vi.mock('../hooks/useAudioRecovery', () => ({
     mockRecoveryFns,
 }));
 
+// Stable across renders, as the real hook's useCallback results are. Fresh
+// functions per render would rebuild the upload callback every render and hide
+// a missing dependency from the prop-change tests below.
+const mockConverterFns = vi.hoisted(() => ({
+  convertTranscriptionResponse: vi.fn((data: unknown) => data),
+  clearError: vi.fn(),
+  createHL7TranscriptionRequest: vi.fn(),
+  createFHIRTranscriptionRequest: vi.fn(),
+}));
+
 vi.mock('../hooks/useHL7FHIRConverter', () => ({
   default: () => ({
-    convertTranscriptionResponse: vi.fn((data) => data),
+    ...mockConverterFns,
     conversionError: null,
-    clearError: vi.fn(),
-    createHL7TranscriptionRequest: vi.fn(),
-    createFHIRTranscriptionRequest: vi.fn(),
   }),
 }));
 
@@ -1020,6 +1027,93 @@ describe('useAudioRecorder', () => {
       const audioFile = formData.get('audio') as File;
       expect(audioFile).not.toBeNull();
       expect(audioFile.type).toBe('audio/wav');
+    });
+
+    // Regression: the note fields a consumer passes can change after mount
+    // while every other prop stays put (a clinician picking another template).
+    // The final chunk, where the note is made, must carry the current values.
+    describe('note fields changed after mount', () => {
+      const sendFinalChunk = () => {
+        const audioData = new Float32Array([0.5, 0.3, 0.1]);
+        act(() => {
+          capturedProcessor!.port.onmessage!({
+            data: {
+              command: 'finalChunk',
+              audioBuffer: audioData.buffer,
+            },
+          });
+        });
+      };
+
+      const postedFormData = async () => {
+        await waitFor(() => {
+          expect(mockFetch).toHaveBeenCalledTimes(1);
+        });
+        const fetchCalls = mockFetch.mock.calls as unknown as Array<[string, { body: FormData }]>;
+        return fetchCalls[0][1].body;
+      };
+
+      it('should post a template changed before recording starts', async () => {
+        const { result, rerender } = renderHook((props) => useAudioRecorder(props), {
+          initialProps: { ...defaultProps, template: 'soap' },
+        });
+
+        rerender({ ...defaultProps, template: 'apso' });
+
+        await act(async () => {
+          result.current.startRecording();
+        });
+        mockFetch.mockClear();
+        sendFinalChunk();
+
+        expect((await postedFormData()).get('template')).toBe('apso');
+      });
+
+      it('should post a template changed during the recording', async () => {
+        const { result, rerender } = renderHook((props) => useAudioRecorder(props), {
+          initialProps: { ...defaultProps, template: 'soap' },
+        });
+
+        await act(async () => {
+          result.current.startRecording();
+        });
+        rerender({ ...defaultProps, template: 'apso' });
+        mockFetch.mockClear();
+        sendFinalChunk();
+
+        expect((await postedFormData()).get('template')).toBe('apso');
+      });
+
+      it('should post an encounterId changed before recording starts', async () => {
+        const { result, rerender } = renderHook((props) => useAudioRecorder(props), {
+          initialProps: { ...defaultProps, encounterId: 'encounter-1' },
+        });
+
+        rerender({ ...defaultProps, encounterId: 'encounter-2' });
+
+        await act(async () => {
+          result.current.startRecording();
+        });
+        mockFetch.mockClear();
+        sendFinalChunk();
+
+        expect((await postedFormData()).get('encounterId')).toBe('encounter-2');
+      });
+
+      it('should post an encounterId changed during the recording', async () => {
+        const { result, rerender } = renderHook((props) => useAudioRecorder(props), {
+          initialProps: { ...defaultProps, encounterId: 'encounter-1' },
+        });
+
+        await act(async () => {
+          result.current.startRecording();
+        });
+        rerender({ ...defaultProps, encounterId: 'encounter-2' });
+        mockFetch.mockClear();
+        sendFinalChunk();
+
+        expect((await postedFormData()).get('encounterId')).toBe('encounter-2');
+      });
     });
   });
 });
