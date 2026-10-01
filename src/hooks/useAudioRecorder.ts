@@ -481,7 +481,7 @@ const useAudioRecorder = ({
   // Create a ref for uploadChunkToServer to avoid closure issues
   const uploadChunkToServerRef = React.useRef<
     | ((
-        audioData: Float32Array,
+        audioData: Float32Array | null,
         isFirst: boolean,
         sequence: number,
         isFinal: boolean,
@@ -1210,6 +1210,8 @@ const useAudioRecorder = ({
       selectedFormat,
       apiBaseUrl,
       doctorName,
+      encounterId,
+      template,
       patientHistory,
       patientDetails,
       onTranscriptionComplete,
@@ -1637,11 +1639,16 @@ const useAudioRecorder = ({
     // 1. Saving to IndexedDB (always, regardless of session failure state)
     // 2. Uploading to server (only if session hasn't failed)
     // 3. Marking session as failed on error
-    uploadChunkToServer(chunk, isFinal, sequence, false, isPaused).finally(() => {
+    //
+    // Called through the ref, not this render's closure: chunks arrive via the
+    // worklet handler startRecording installed, which holds the queue functions
+    // of the render it was created in. The ref is reassigned every render, so
+    // the upload reads the current props (template, encounterId, …).
+    uploadChunkToServerRef.current!(chunk, isFinal, sequence, false, isPaused).finally(() => {
       isProcessingQueueRef.current = false;
       processNextChunkInQueue(); // Continue processing remaining chunks
     });
-  }, [uploadChunkToServer, isLoaded]);
+  }, [isLoaded]);
 
   const enqueueChunk = React.useCallback(
     (
