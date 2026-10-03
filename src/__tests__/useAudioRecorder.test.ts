@@ -743,6 +743,86 @@ describe('useAudioRecorder', () => {
     });
   });
 
+  // Only resumeRecording used to clear isPaused, so stopping from the paused
+  // state carried the flag into the next recording — and startRecording reads
+  // it to decide whether to open a new session.
+  describe('stopping while paused', () => {
+    async function startPauseStop() {
+      const hook = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await hook.result.current.startRecording();
+      });
+      act(() => {
+        hook.result.current.pauseRecording();
+      });
+      expect(hook.result.current.isPaused).toBe(true);
+
+      await act(async () => {
+        await hook.result.current.stopRecording();
+      });
+      return hook;
+    }
+
+    it('should clear isPaused', async () => {
+      const { result } = await startPauseStop();
+
+      expect(result.current.isPaused).toBe(false);
+      expect(result.current.isRecording).toBe(false);
+    });
+
+    it('should start the next recording in a new session', async () => {
+      const { result } = await startPauseStop();
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(true);
+      expect(result.current.isPaused).toBe(false);
+
+      const sessionIds = (mockRecoveryFns.createSession.mock.calls as unknown as Array<[string]>).map(
+        ([id]) => id
+      );
+      expect(sessionIds).toHaveLength(2);
+      expect(sessionIds[1]).not.toBe(sessionIds[0]);
+    });
+
+    it('should let the next recording pause', async () => {
+      const { result } = await startPauseStop();
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+
+      expect(result.current.isPaused).toBe(true);
+      expect(result.current.isRecording).toBe(false);
+    });
+  });
+
+  describe('starting while paused', () => {
+    it('should not leave isPaused set', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(true);
+      expect(result.current.isPaused).toBe(false);
+    });
+  });
+
   describe('selectedFormat prop', () => {
     it('should accept json format', () => {
       const props = { ...defaultProps, selectedFormat: 'json' as const };
