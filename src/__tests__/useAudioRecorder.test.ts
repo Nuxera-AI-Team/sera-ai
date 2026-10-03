@@ -1053,6 +1053,56 @@ describe('useAudioRecorder', () => {
         return fetchCalls[0][1].body;
       };
 
+      // v2 makes the note in a separate /medical-note call; it must carry the
+      // consumer's template and no invented speciality or user (the legacy
+      // soap_note / user 115 defaults are gone).
+      it('should write a v2 note from the template the consumer passes', async () => {
+        const original = mockFetch.getMockImplementation();
+        mockFetch.mockImplementation(((url: string) =>
+          Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve(
+                String(url).includes('/api/transcribe/v2')
+                  ? {
+                      labeledTranscript: 'Doctor: cough for three days',
+                      diarizedTranscript: '',
+                      roles: {},
+                    }
+                  : { classifiedInfo: {} }
+              ),
+            text: () => Promise.resolve(''),
+          })) as unknown as Parameters<typeof mockFetch.mockImplementation>[0]);
+        try {
+          const { result } = renderHook(() =>
+            useAudioRecorder({
+              ...defaultProps,
+              speciality: '',
+              apiVersion: 'v2',
+              template: 'document',
+            })
+          );
+          await act(async () => {
+            result.current.startRecording();
+          });
+          mockFetch.mockClear();
+          sendFinalChunk();
+
+          await waitFor(() => {
+            expect(mockFetch).toHaveBeenCalledTimes(2);
+          });
+          const calls = mockFetch.mock.calls as unknown as Array<[string, { body: string }]>;
+          expect(calls[1][0]).toContain('/api/transcribe/medical-note');
+          const params = JSON.parse(calls[1][1].body);
+          expect(params.template).toBe('document');
+          expect(params).not.toHaveProperty('speciality');
+          expect(params).not.toHaveProperty('userId');
+        } finally {
+          mockFetch.mockImplementation(original!);
+        }
+      });
+
       it('should post a template changed before recording starts', async () => {
         const { result, rerender } = renderHook((props) => useAudioRecorder(props), {
           initialProps: { ...defaultProps, template: 'soap' },

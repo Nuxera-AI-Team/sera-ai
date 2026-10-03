@@ -904,6 +904,7 @@ const useAudioRecorder = ({
                 effectiveApiKey || "",
                 combinedSoFar,
                 {
+                  template,
                   speciality,
                   doctorName,
                   skipDiarization: skipDiarizationRef.current,

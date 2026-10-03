@@ -105,6 +105,48 @@ describe("postMedicalNote", () => {
 
     expect(captured.params?.skipDiarization).toBe("true");
   });
+  // The backend's legacy speciality prompts are going away (2026-10): a note
+  // is written from a DB template, with the speciality an admin assigned to
+  // the doctor and the user the API key belongs to. Nothing is invented here.
+  it("writes the note from the DB SOAP template when the caller names none", async () => {
+    const captured = stubJsonFetch();
+
+    await postMedicalNote("https://api.test", "k", "Doctor: hi", {});
+
+    expect(captured.params?.template).toBe("soap");
+    expect(captured.params).not.toHaveProperty("speciality");
+    expect(captured.params).not.toHaveProperty("userId");
+  });
+
+  it("sends the caller's template and speciality as given", async () => {
+    const captured = stubJsonFetch();
+
+    await postMedicalNote("https://api.test", "k", "Doctor: hi", {
+      template: "document",
+      speciality: "cardiology",
+    });
+
+    expect(captured.params?.template).toBe("document");
+    expect(captured.params?.speciality).toBe("cardiology");
+  });
+
+  it("sends a user id only when the caller has one", async () => {
+    const captured = stubJsonFetch();
+
+    await postMedicalNote("https://api.test", "k", "Doctor: hi", { userId: 42 });
+
+    expect(captured.params?.userId).toBe("42");
+  });
+
+  it("labels the note with the template when no speciality was sent", async () => {
+    stubJsonFetch({ classifiedInfo: {} });
+
+    const note = await postMedicalNote("https://api.test", "k", "Doctor: hi", {
+      template: "document",
+    });
+
+    expect(note.speciality).toBe("document");
+  });
 });
 
 describe("parseV2ChunkResponse", () => {
