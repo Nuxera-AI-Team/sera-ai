@@ -24,7 +24,14 @@ export interface TranscribeV2ChunkResult {
 }
 
 export interface MedicalNoteOptions {
-  speciality: string;
+  /** DB note template slug. Defaults to the backend's `soap` template. */
+  template?: string;
+  /**
+   * Speciality slug. Omit it to let the backend write the note with the
+   * speciality an admin assigned to the doctor.
+   */
+  speciality?: string;
+  /** Echoed back in the response metadata only — the backend takes the user from the API key. */
   userId?: number;
   patientName?: string;
   doctorName?: string;
@@ -112,10 +119,15 @@ export async function postMedicalNote(
   transcribedText: string,
   opts: MedicalNoteOptions,
 ): Promise<ClassificationInfoResponse> {
+  // No legacy defaults: the backend's speciality prompts (`soap_note`) are
+  // going away, so the note comes from a DB template — `soap` unless the
+  // caller names one — and a speciality or user is sent only when given.
+  const template = opts.template || "soap";
   const params: Record<string, string> = {
     transcribedText,
-    userId: String(opts.userId ?? 115),
-    speciality: opts.speciality || "soap_note",
+    template,
+    ...(opts.speciality ? { speciality: opts.speciality } : {}),
+    ...(opts.userId !== undefined ? { userId: String(opts.userId) } : {}),
     patientName: opts.patientName ?? "sera-ai",
     doctorName: opts.doctorName ?? "sera-ai",
     // Default to skipping speaker labeling. The package's public default (the
@@ -140,7 +152,7 @@ export async function postMedicalNote(
     throw new Error(`Medical note failed: ${res.status} ${body.slice(0, 300)}`);
   }
 
-  return buildClassification(await res.json(), opts.speciality || "soap_note");
+  return buildClassification(await res.json(), opts.speciality || template);
 }
 
 /**
