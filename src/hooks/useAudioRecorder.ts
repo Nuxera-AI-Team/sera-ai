@@ -904,6 +904,7 @@ const useAudioRecorder = ({
                 effectiveApiKey || "",
                 combinedSoFar,
                 {
+                  template,
                   speciality,
                   doctorName,
                   skipDiarization: skipDiarizationRef.current,
@@ -1442,6 +1443,7 @@ const useAudioRecorder = ({
       console.log(`[SERA] Step 2: Recording started | sampleRate=${audioContext.sampleRate}Hz`);
       processorRef.current = processor;
       setIsRecording(true);
+      setIsPaused(false);
 
       // Prevent screen from sleeping during recording
       if ("wakeLock" in navigator) {
@@ -1497,6 +1499,9 @@ const useAudioRecorder = ({
     }
 
     setIsRecording(false);
+    // A recording stopped while paused must not leave the next one "paused":
+    // startRecording reads this flag to decide whether to open a new session.
+    setIsPaused(false);
 
     // Release wake lock when recording stops
     if (wakeLockRef.current) {

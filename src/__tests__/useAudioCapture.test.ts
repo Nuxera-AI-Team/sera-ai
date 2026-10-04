@@ -337,6 +337,71 @@ describe('useAudioCapture', () => {
     });
   });
 
+  // Only resumeRecording used to clear isPaused, so stopping from the paused
+  // state carried the flag into the next recording.
+  describe('stopping while paused', () => {
+    async function startPauseStop() {
+      const hook = renderHook(() => useAudioCapture(defaultProps));
+
+      await act(async () => {
+        await hook.result.current.startRecording();
+      });
+      act(() => {
+        hook.result.current.pauseRecording();
+      });
+      expect(hook.result.current.isPaused).toBe(true);
+
+      act(() => {
+        hook.result.current.stopRecording();
+      });
+      return hook;
+    }
+
+    it('should clear isPaused', async () => {
+      const { result } = await startPauseStop();
+
+      expect(result.current.isPaused).toBe(false);
+      expect(result.current.isRecording).toBe(false);
+    });
+
+    it('should let the next recording pause', async () => {
+      const { result } = await startPauseStop();
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      expect(result.current.isRecording).toBe(true);
+      expect(result.current.isPaused).toBe(false);
+
+      act(() => {
+        result.current.pauseRecording();
+      });
+
+      expect(result.current.isPaused).toBe(true);
+      expect(result.current.isRecording).toBe(false);
+    });
+  });
+
+  describe('starting while paused', () => {
+    it('should not leave isPaused set', async () => {
+      const { result } = renderHook(() => useAudioCapture(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(true);
+      expect(result.current.isPaused).toBe(false);
+    });
+  });
+
   describe('startRecording', () => {
     it('should validate microphone access before starting', async () => {
       const { result } = renderHook(() => useAudioCapture(defaultProps));

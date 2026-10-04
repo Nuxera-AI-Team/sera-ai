@@ -743,6 +743,86 @@ describe('useAudioRecorder', () => {
     });
   });
 
+  // Only resumeRecording used to clear isPaused, so stopping from the paused
+  // state carried the flag into the next recording — and startRecording reads
+  // it to decide whether to open a new session.
+  describe('stopping while paused', () => {
+    async function startPauseStop() {
+      const hook = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await hook.result.current.startRecording();
+      });
+      act(() => {
+        hook.result.current.pauseRecording();
+      });
+      expect(hook.result.current.isPaused).toBe(true);
+
+      await act(async () => {
+        await hook.result.current.stopRecording();
+      });
+      return hook;
+    }
+
+    it('should clear isPaused', async () => {
+      const { result } = await startPauseStop();
+
+      expect(result.current.isPaused).toBe(false);
+      expect(result.current.isRecording).toBe(false);
+    });
+
+    it('should start the next recording in a new session', async () => {
+      const { result } = await startPauseStop();
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(true);
+      expect(result.current.isPaused).toBe(false);
+
+      const sessionIds = (mockRecoveryFns.createSession.mock.calls as unknown as Array<[string]>).map(
+        ([id]) => id
+      );
+      expect(sessionIds).toHaveLength(2);
+      expect(sessionIds[1]).not.toBe(sessionIds[0]);
+    });
+
+    it('should let the next recording pause', async () => {
+      const { result } = await startPauseStop();
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+
+      expect(result.current.isPaused).toBe(true);
+      expect(result.current.isRecording).toBe(false);
+    });
+  });
+
+  describe('starting while paused', () => {
+    it('should not leave isPaused set', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+
+      expect(result.current.isRecording).toBe(true);
+      expect(result.current.isPaused).toBe(false);
+    });
+  });
+
   describe('selectedFormat prop', () => {
     it('should accept json format', () => {
       const props = { ...defaultProps, selectedFormat: 'json' as const };
@@ -1052,6 +1132,56 @@ describe('useAudioRecorder', () => {
         const fetchCalls = mockFetch.mock.calls as unknown as Array<[string, { body: FormData }]>;
         return fetchCalls[0][1].body;
       };
+
+      // v2 makes the note in a separate /medical-note call; it must carry the
+      // consumer's template and no invented speciality or user (the legacy
+      // soap_note / user 115 defaults are gone).
+      it('should write a v2 note from the template the consumer passes', async () => {
+        const original = mockFetch.getMockImplementation();
+        mockFetch.mockImplementation(((url: string) =>
+          Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve(
+                String(url).includes('/api/transcribe/v2')
+                  ? {
+                      labeledTranscript: 'Doctor: cough for three days',
+                      diarizedTranscript: '',
+                      roles: {},
+                    }
+                  : { classifiedInfo: {} }
+              ),
+            text: () => Promise.resolve(''),
+          })) as unknown as Parameters<typeof mockFetch.mockImplementation>[0]);
+        try {
+          const { result } = renderHook(() =>
+            useAudioRecorder({
+              ...defaultProps,
+              speciality: '',
+              apiVersion: 'v2',
+              template: 'document',
+            })
+          );
+          await act(async () => {
+            result.current.startRecording();
+          });
+          mockFetch.mockClear();
+          sendFinalChunk();
+
+          await waitFor(() => {
+            expect(mockFetch).toHaveBeenCalledTimes(2);
+          });
+          const calls = mockFetch.mock.calls as unknown as Array<[string, { body: string }]>;
+          expect(calls[1][0]).toContain('/api/transcribe/medical-note');
+          const params = JSON.parse(calls[1][1].body);
+          expect(params.template).toBe('document');
+          expect(params).not.toHaveProperty('speciality');
+          expect(params).not.toHaveProperty('userId');
+        } finally {
+          mockFetch.mockImplementation(original!);
+        }
+      });
 
       it('should post a template changed before recording starts', async () => {
         const { result, rerender } = renderHook((props) => useAudioRecorder(props), {
