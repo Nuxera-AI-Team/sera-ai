@@ -596,6 +596,7 @@ const useAudioCapture = ({
       recordingSampleRateRef.current = audioContext.sampleRate;
       processorRef.current = processor;
       setIsRecording(true);
+      setIsPaused(false);
 
       // Start chunk timer
       const chunkIntervalId = window.setInterval(() => {
@@ -649,6 +650,8 @@ const useAudioCapture = ({
 
     processorRef.current = null;
     setIsRecording(false);
+    // A recording stopped while paused must not leave the next one "paused".
+    setIsPaused(false);
   }, []);
 
   // Pause recording
