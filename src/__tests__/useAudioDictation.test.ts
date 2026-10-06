@@ -42,6 +42,32 @@ vi.mock('../hooks/useHL7FHIRConverter', () => ({
 
 import useAudioDictation from '../hooks/useAudioDictation';
 
+type WorkletMessageHandler = (event: { data: Record<string, unknown> }) => void;
+
+let finalChunkDelayMs: number | null = 0;
+
+class FakeWorkletNode {
+  static latest: FakeWorkletNode | null = null;
+  connect = vi.fn();
+  disconnect = vi.fn();
+  port = {
+    onmessage: null as WorkletMessageHandler | null,
+    postMessage: vi.fn((message: { command: string }) => {
+      if (message.command !== 'stop' || finalChunkDelayMs === null) return;
+      const reply = () =>
+        this.port.onmessage?.({
+          data: { command: 'finalChunk', audioBuffer: new Float32Array([0.1, 0.2, 0.3]).buffer },
+        });
+      if (finalChunkDelayMs === 0) queueMicrotask(reply);
+      else setTimeout(reply, finalChunkDelayMs);
+    }),
+  };
+
+  constructor() {
+    FakeWorkletNode.latest = this;
+  }
+}
+
 describe('useAudioDictation', () => {
   const defaultProps = {
     onDictationComplete: vi.fn(),
@@ -50,9 +76,13 @@ describe('useAudioDictation', () => {
     onError: vi.fn(),
     apiKey: 'test-api-key',
   };
+  const OriginalAudioWorkletNode = globalThis.AudioWorkletNode;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    FakeWorkletNode.latest = null;
+    finalChunkDelayMs = 0;
+    (globalThis as any).AudioWorkletNode = FakeWorkletNode;
 
     mockMediaDevices.getUserMedia.mockResolvedValue(new MockMediaStream());
 
@@ -78,7 +108,9 @@ describe('useAudioDictation', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
+    (globalThis as any).AudioWorkletNode = OriginalAudioWorkletNode;
   });
 
   describe('initial state', () => {
@@ -187,6 +219,65 @@ describe('useAudioDictation', () => {
       expect(result.current.dictationError).toBe('No audio data to process');
       expect(defaultProps.onError).toHaveBeenCalledWith('No audio data to process');
     });
+
+    it('sends the audio for transcription as soon as the final chunk arrives', async () => {
+      const { result } = renderHook(() => useAudioDictation(defaultProps));
+
+      await act(async () => {
+        await result.current.startDictating();
+      });
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      await act(async () => {
+        await result.current.stopDictating();
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith('https://nuxera.cloud/api/dictate', expect.anything());
+      expect(defaultProps.onDictationComplete).toHaveBeenCalledWith('Patient has chronic headache');
+    });
+
+    it('still sends the audio when the final chunk arrives late', async () => {
+      finalChunkDelayMs = 500;
+      const { result } = renderHook(() => useAudioDictation(defaultProps));
+
+      await act(async () => {
+        await result.current.startDictating();
+      });
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      await act(async () => {
+        const stopping = result.current.stopDictating();
+        await vi.advanceTimersByTimeAsync(500);
+        await stopping;
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.current.dictationError).toBeNull();
+      expect(defaultProps.onDictationComplete).toHaveBeenCalledWith('Patient has chronic headache');
+    });
+
+    it('gives up waiting when the processor never returns the final chunk', async () => {
+      finalChunkDelayMs = null;
+      const { result } = renderHook(() => useAudioDictation(defaultProps));
+
+      await act(async () => {
+        await result.current.startDictating();
+      });
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      await act(async () => {
+        const stopping = result.current.stopDictating();
+        await vi.advanceTimersByTimeAsync(2000);
+        await stopping;
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result.current.isDictating).toBe(false);
+      expect(result.current.dictationError).toBe('No audio data to process');
+    });
   });
 
   describe('format options', () => {
@@ -293,37 +384,6 @@ describe('useAudioDictation', () => {
   });
 
   describe('audio processing pipeline', () => {
-    let capturedProcessor: {
-      port: {
-        postMessage: ReturnType<typeof vi.fn>;
-        onmessage: ((event: { data: Record<string, unknown> }) => void) | null;
-      };
-      connect: ReturnType<typeof vi.fn>;
-      disconnect: ReturnType<typeof vi.fn>;
-    } | null;
-    let OriginalAudioWorkletNode: typeof globalThis.AudioWorkletNode;
-
-    beforeEach(() => {
-      capturedProcessor = null;
-      OriginalAudioWorkletNode = globalThis.AudioWorkletNode;
-
-      (globalThis as any).AudioWorkletNode = class {
-        port = {
-          postMessage: vi.fn(),
-          onmessage: null as ((event: { data: Record<string, unknown> }) => void) | null,
-        };
-        connect = vi.fn();
-        disconnect = vi.fn();
-        constructor() {
-          capturedProcessor = this as any;
-        }
-      };
-    });
-
-    afterEach(() => {
-      (globalThis as any).AudioWorkletNode = OriginalAudioWorkletNode;
-    });
-
     it('should set up the audio pipeline on startDictating', async () => {
       const { result } = renderHook(() => useAudioDictation(defaultProps));
 
@@ -332,8 +392,8 @@ describe('useAudioDictation', () => {
       });
 
       expect(result.current.isDictating).toBe(true);
-      expect(capturedProcessor).not.toBeNull();
-      expect(capturedProcessor!.port.onmessage).not.toBeNull();
+      expect(FakeWorkletNode.latest).not.toBeNull();
+      expect(FakeWorkletNode.latest!.port.onmessage).not.toBeNull();
     });
 
     it('should send stop command to processor on stopDictating', async () => {
@@ -343,13 +403,13 @@ describe('useAudioDictation', () => {
         await result.current.startDictating();
       });
 
-      expect(capturedProcessor).not.toBeNull();
+      expect(FakeWorkletNode.latest).not.toBeNull();
 
       await act(async () => {
         await result.current.stopDictating();
       });
 
-      expect(capturedProcessor!.port.postMessage).toHaveBeenCalledWith({
+      expect(FakeWorkletNode.latest!.port.postMessage).toHaveBeenCalledWith({
         command: 'stop',
       });
     });
@@ -361,12 +421,12 @@ describe('useAudioDictation', () => {
         await result.current.startDictating();
       });
 
-      expect(capturedProcessor).not.toBeNull();
+      expect(FakeWorkletNode.latest).not.toBeNull();
 
       // Simulate audio data arriving
       const audioData = new Float32Array([0.1, 0.2, 0.3]);
       act(() => {
-        capturedProcessor!.port.onmessage!({
+        FakeWorkletNode.latest!.port.onmessage!({
           data: {
             command: 'audioData',
             audioBuffer: audioData.buffer,
