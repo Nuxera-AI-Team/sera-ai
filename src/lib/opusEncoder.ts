@@ -26,6 +26,17 @@ export interface OpusEncodeOptions {
 }
 
 const OPUS_APPLICATION_AUDIO = 2049; // opus-recorder's default application
+const FRAME_MS = 20;
+const WORKER_PRE_SKIP_MS = 80;
+
+export function padForOpusWorker(audio: Float32Array, sampleRate: number): Float32Array {
+  const frame = (sampleRate * FRAME_MS) / 1000;
+  const lead = (frame * WORKER_PRE_SKIP_MS) / FRAME_MS;
+  const frames = Math.ceil((lead + audio.length) / frame) + 1;
+  const padded = new Float32Array(frames * frame);
+  padded.set(audio, lead);
+  return padded;
+}
 
 /**
  * Encode `audioData` (mono Float32 PCM) to a complete Ogg Opus File.
@@ -72,7 +83,10 @@ export async function encodePcmToOpus(
           // no identification header and decoders reject it as corrupted. Then
           // feed the PCM (single channel) and finalize.
           worker.postMessage({ command: "getHeaderPages" });
-          worker.postMessage({ command: "encode", buffers: [audioData] });
+          worker.postMessage({
+            command: "encode",
+            buffers: [padForOpusWorker(audioData, opts.sampleRate)],
+          });
           worker.postMessage({ command: "done" });
           break;
         case "page":
@@ -98,6 +112,7 @@ export async function encodePcmToOpus(
       encoderSampleRate,
       originalSampleRate: opts.sampleRate,
       numberOfChannels: 1,
+      encoderFrameSize: FRAME_MS,
       maxFramesPerPage: 40,
       resampleQuality: 3,
       ...(opts.bitRate ? { encoderBitRate: opts.bitRate } : {}),
