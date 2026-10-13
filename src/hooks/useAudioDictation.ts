@@ -3,6 +3,17 @@ import useHL7FHIRConverter from "./useHL7FHIRConverter";
 import { isValidSampleRate, InvalidSampleRateError } from "../constants/audio";
 
 const API_BASE_URL = "https://nuxera.cloud";
+const FINAL_CHUNK_TIMEOUT_MS = 2000;
+
+const concatSamples = (chunks: Float32Array[]) => {
+  const combined = new Float32Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return combined;
+};
 
 // Embedded Audio Processor Worker for dictation - no external files needed
 const createDictationProcessorWorker = () => {
@@ -124,8 +135,7 @@ const useAudioDictation = ({
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioSamplesRef = useRef<Float32Array[]>([]);
-
-  const [audioBuffer, setAudioBuffer] = useState<Float32Array | null>(null);
+  const finalChunkReceivedRef = useRef<(() => void) | null>(null);
 
   const { createHL7DictationRequest, createFHIRDictationRequest, convertDictationResponse } =
     useHL7FHIRConverter();
@@ -166,8 +176,6 @@ const useAudioDictation = ({
   const startDictating = async () => {
     try {
       console.log("Starting recording");
-      // Reset audio chunks and buffer
-      setAudioBuffer(null);
       audioSamplesRef.current = [];
 
       // Clear any previous errors
@@ -204,31 +212,7 @@ const useAudioDictation = ({
 
         if (event.data.command === "finalChunk") {
           console.log("Received final chunk");
-
-          // Combine all samples into a single buffer
-          // Note: the audio buffer was already pushed above by the generic audioBuffer check
-          const totalLength = audioSamplesRef.current.reduce(
-            (acc, buffer) => acc + buffer.length,
-            0
-          );
-
-          if (totalLength > 0) {
-            const combinedBuffer = new Float32Array(totalLength);
-            let offset = 0;
-
-            audioSamplesRef.current.forEach((buffer) => {
-              combinedBuffer.set(buffer, offset);
-              offset += buffer.length;
-            });
-
-            console.log("Combined buffer length:", combinedBuffer.length);
-            setAudioBuffer(combinedBuffer);
-          } else {
-            console.warn("Final chunk received but no audio data accumulated");
-            const errorMessage = "No audio data was recorded";
-            setDictationError(errorMessage);
-            onError?.(errorMessage);
-          }
+          finalChunkReceivedRef.current?.();
         }
       };
 
@@ -252,6 +236,18 @@ const useAudioDictation = ({
     }
   };
 
+  const stopProcessorAndWaitForFinalChunk = (processor: AudioWorkletNode) =>
+    new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timeoutId);
+        finalChunkReceivedRef.current = null;
+        resolve();
+      };
+      const timeoutId = setTimeout(finish, FINAL_CHUNK_TIMEOUT_MS);
+      finalChunkReceivedRef.current = finish;
+      processor.port.postMessage({ command: "stop" });
+    });
+
   // Updated function to stop dictation
   const stopDictating = async () => {
     console.log("Stopping dictation");
@@ -260,10 +256,7 @@ const useAudioDictation = ({
       // Send stop command to processor FIRST (before stopping tracks)
       if (processorRef.current) {
         console.log("Sending stop command to processor");
-        processorRef.current.port.postMessage({ command: "stop" });
-
-        // Wait a bit for the processor to send the final chunk
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await stopProcessorAndWaitForFinalChunk(processorRef.current);
       }
 
       // THEN stop media stream tracks
@@ -302,34 +295,10 @@ const useAudioDictation = ({
         audioContextRef.current = null;
       }
 
-      // Wait a bit more to ensure audioBuffer state is updated
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
-      // Check if we have audio data
-      if (audioBuffer && audioBuffer.length > 0) {
-        console.log(`Processing audio buffer of size ${audioBuffer.length} samples`);
-        await processDictationAudio(audioBuffer);
-      } else if (audioSamplesRef.current.length > 0) {
-        console.log("No audio buffer but have samples, combining now");
-        const totalLength = audioSamplesRef.current.reduce((acc, buffer) => acc + buffer.length, 0);
-
-        if (totalLength > 0) {
-          const combinedBuffer = new Float32Array(totalLength);
-          let offset = 0;
-
-          audioSamplesRef.current.forEach((buffer) => {
-            combinedBuffer.set(buffer, offset);
-            offset += buffer.length;
-          });
-
-          console.log(`Created combined buffer of size ${combinedBuffer.length} samples`);
-          await processDictationAudio(combinedBuffer);
-        } else {
-          console.error("No valid audio data found");
-          const errorMessage = "No audio data recorded";
-          setDictationError(errorMessage);
-          onError?.(errorMessage);
-        }
+      const samples = concatSamples(audioSamplesRef.current);
+      if (samples.length > 0) {
+        console.log(`Processing audio buffer of size ${samples.length} samples`);
+        await processDictationAudio(samples);
       } else {
         console.error("No audio data to process");
         const errorMessage = "No audio data to process";
@@ -344,7 +313,6 @@ const useAudioDictation = ({
     } finally {
       setIsDictating(false);
       audioSamplesRef.current = [];
-      setAudioBuffer(null);
     }
   };
 
