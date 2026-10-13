@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { mockMediaDevices, MockMediaStream, mockFetch } from './setup';
+import { captureConsole } from './consoleCapture';
 
 // Hoisted mock functions for the converter
 const mockConverterFns = vi.hoisted(() => ({
@@ -278,6 +279,49 @@ describe('useAudioDictation', () => {
       expect(result.current.isDictating).toBe(false);
       expect(result.current.dictationError).toBe('No audio data to process');
     });
+  });
+
+  describe('console output', () => {
+    const API_KEY = 'sk-live-5e3f1c9a7b2d4e6f';
+    const DICTATION = 'Hemoptysis for three days, smoker of 20 pack-years';
+
+    it.each(['json', 'hl7', 'fhir'] as const)(
+      'never logs the API key or the dictation text (%s)',
+      async (selectedFormat) => {
+        (mockFetch as ReturnType<typeof vi.fn>).mockImplementation(() =>
+          Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: { get: () => 'application/json' },
+            json: () => Promise.resolve({ dictation: DICTATION, sessionId: 'dict-session-1' }),
+            text: () => Promise.resolve(''),
+          })
+        );
+        const consoleOutput = captureConsole();
+        const onDictationComplete = vi.fn();
+        const { result } = renderHook(() =>
+          useAudioDictation({ ...defaultProps, apiKey: API_KEY, selectedFormat, onDictationComplete })
+        );
+
+        await act(async () => {
+          await result.current.startDictating();
+        });
+        await act(async () => {
+          await result.current.stopDictating();
+        });
+
+        // Both values really went through the hook, so their absence below means something.
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ headers: expect.objectContaining({ 'x-api-key': API_KEY }) })
+        );
+        expect(onDictationComplete).toHaveBeenCalledWith(DICTATION);
+
+        const output = consoleOutput();
+        expect(output).not.toContain(API_KEY);
+        expect(output).not.toContain(DICTATION);
+      }
+    );
   });
 
   describe('format options', () => {
