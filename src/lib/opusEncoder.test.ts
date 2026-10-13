@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { encodePcmToOpus } from "./opusEncoder";
+import { encodePcmToOpus, padForOpusWorker } from "./opusEncoder";
 
 // Minimal stand-in for opus-recorder's encoderWorker: replies "ready" to init,
 // and on "done" emits page(s) then "done" — the real protocol.
@@ -72,6 +72,7 @@ describe("encodePcmToOpus", () => {
       encoderSampleRate: 16000,
       originalSampleRate: 16000,
       numberOfChannels: 1,
+      encoderFrameSize: 20,
     });
     // Header pages must be requested before encoding, or the Opus stream is
     // headerless and decoders reject it as corrupted.
@@ -79,7 +80,7 @@ describe("encodePcmToOpus", () => {
     expect(order.indexOf("getHeaderPages")).toBeGreaterThanOrEqual(0);
     expect(order.indexOf("getHeaderPages")).toBeLessThan(order.indexOf("encode"));
     const encode = w.posted.find((m) => m.command === "encode");
-    expect(encode.buffers[0]).toBe(pcm);
+    expect(Array.from(encode.buffers[0])).toEqual(Array.from(padForOpusWorker(pcm, 16000)));
     expect(w.posted.some((m) => m.command === "done")).toBe(true);
     expect(w.terminated).toBe(true); // worker cleaned up
   });
@@ -103,5 +104,32 @@ describe("encodePcmToOpus", () => {
     await expect(
       encodePcmToOpus(new Float32Array([0]), { sampleRate: 16000, workerUrl: "u" })
     ).rejects.toThrow(/worker error/i);
+  });
+});
+
+describe("padForOpusWorker", () => {
+  it.each([
+    [16000, 12928],
+    [16000, 12800],
+    [48000, 38784],
+    [44100, 44100],
+  ])("at %i Hz, %i samples land after 80 ms of zeros in whole 20 ms frames", (sampleRate, length) => {
+    const frame = sampleRate / 50;
+    const lead = 4 * frame;
+    const audio = Float32Array.from({ length }, (_, i) => (i % 7) / 10 + 0.05);
+
+    const padded = padForOpusWorker(audio, sampleRate);
+
+    expect(padded.length % frame).toBe(0);
+    expect(padded.subarray(0, lead).every((v) => v === 0)).toBe(true);
+    expect(Array.from(padded.subarray(lead, lead + length))).toEqual(Array.from(audio));
+    const tail = padded.length - lead - length;
+    expect(tail).toBeGreaterThanOrEqual(frame);
+    expect(tail).toBeLessThan(2 * frame);
+    expect(padded.subarray(lead + length).every((v) => v === 0)).toBe(true);
+  });
+
+  it("pads an empty chunk to the lead plus one frame", () => {
+    expect(padForOpusWorker(new Float32Array(0), 16000).length).toBe(1600);
   });
 });
