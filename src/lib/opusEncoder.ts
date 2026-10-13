@@ -29,6 +29,21 @@ const OPUS_APPLICATION_AUDIO = 2049; // opus-recorder's default application
 const FRAME_MS = 20;
 const WORKER_PRE_SKIP_MS = 80;
 
+/**
+ * Pad a chunk so opus-recorder 8.0.5's worker keeps all of it.
+ *
+ * - The worker always writes an 80 ms pre-skip into the OpusHead, but the
+ *   encoder only delays the audio by about 8 ms, so decoders would drop the
+ *   first ~72 ms of speech. With 80 ms of zeros in front, only zeros are dropped.
+ * - The worker sizes its end padding from the length of the first `encode`
+ *   call, and we send the whole chunk in one call, so a chunk that isn't whole
+ *   20 ms frames would come back about twice as long. Padding to whole frames
+ *   means the worker adds none; the one extra frame flushes the encoder's
+ *   look-ahead so the last few ms aren't cut off.
+ *
+ * The decoded file is 20-40 ms longer than the input, all of it silence
+ * (about 8 ms at the start, the rest at the end).
+ */
 export function padForOpusWorker(audio: Float32Array, sampleRate: number): Float32Array {
   const frame = (sampleRate * FRAME_MS) / 1000;
   const lead = (frame * WORKER_PRE_SKIP_MS) / FRAME_MS;
@@ -49,6 +64,7 @@ export async function encodePcmToOpus(
   const encoderSampleRate = opts.encoderSampleRate ?? 16000;
   const fileName = opts.fileName ?? "chunk.opus";
   const timeoutMs = opts.timeoutMs ?? 30_000;
+  const padded = padForOpusWorker(audioData, opts.sampleRate);
 
   return new Promise<File>((resolve, reject) => {
     let worker: Worker;
@@ -83,10 +99,8 @@ export async function encodePcmToOpus(
           // no identification header and decoders reject it as corrupted. Then
           // feed the PCM (single channel) and finalize.
           worker.postMessage({ command: "getHeaderPages" });
-          worker.postMessage({
-            command: "encode",
-            buffers: [padForOpusWorker(audioData, opts.sampleRate)],
-          });
+          // `padded` is our own copy, so transfer it rather than clone it.
+          worker.postMessage({ command: "encode", buffers: [padded] }, [padded.buffer]);
           worker.postMessage({ command: "done" });
           break;
         case "page":

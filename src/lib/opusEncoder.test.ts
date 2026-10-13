@@ -11,13 +11,15 @@ class MockWorker {
   onmessage: Handler = null;
   onerror: ((e: { message: string }) => void) | null = null;
   posted: unknown[] = [];
+  transfers: Transferable[][] = [];
   terminated = false;
 
   constructor(public url: string) {
     MockWorker.instances.push(this);
   }
-  postMessage(msg: unknown) {
+  postMessage(msg: unknown, transfer: Transferable[] = []) {
     this.posted.push(msg);
+    this.transfers.push(transfer);
     if (msg.command === "init") {
       if (MockWorker.behavior === "error") {
         queueMicrotask(() => this.onerror?.({ message: "boom" }));
@@ -83,6 +85,19 @@ describe("encodePcmToOpus", () => {
     expect(Array.from(encode.buffers[0])).toEqual(Array.from(padForOpusWorker(pcm, 16000)));
     expect(w.posted.some((m) => m.command === "done")).toBe(true);
     expect(w.terminated).toBe(true); // worker cleaned up
+  });
+
+  it("transfers the padded copy to the worker and leaves the caller's PCM alone", async () => {
+    vi.stubGlobal("Worker", MockWorker as unknown as typeof Worker);
+    const pcm = new Float32Array([0.1, -0.2, 0.3]);
+
+    await encodePcmToOpus(pcm, { sampleRate: 16000, workerUrl: "u" });
+
+    const w = MockWorker.instances[0];
+    const i = w.posted.findIndex((m) => m.command === "encode");
+    const padded = w.posted[i].buffers[0];
+    expect(padded).not.toBe(pcm); // the caller still owns `pcm`
+    expect(w.transfers[i]).toEqual([padded.buffer]);
   });
 
   it("rejects when the encoder produces no data", async () => {
