@@ -487,7 +487,6 @@ const useAudioRecorder = ({
   // fall back to a hard-coded interval. A prop change while paused takes effect
   // on resume.
   const chunkIntervalMs = resolveChunkDurationMs(chunkDurationMs);
-  const [uploadChunkInterval, setUploadChunkInterval] = useState<number | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -506,6 +505,21 @@ const useAudioRecorder = ({
   const mediaStreamRef = React.useRef<MediaStream | null>(null);
   const processorRef = React.useRef<AudioWorkletNode | null>(null);
   const audioContextRef = React.useRef<AudioContext | null>(null);
+  const uploadChunkIntervalRef = React.useRef<number | null>(null);
+
+  const clearUploadChunkTimer = React.useCallback(() => {
+    if (uploadChunkIntervalRef.current !== null) {
+      clearInterval(uploadChunkIntervalRef.current);
+      uploadChunkIntervalRef.current = null;
+    }
+  }, []);
+
+  const startUploadChunkTimer = React.useCallback(() => {
+    clearUploadChunkTimer();
+    uploadChunkIntervalRef.current = window.setInterval(() => {
+      processorRef.current?.port.postMessage({ command: "uploadChunk" });
+    }, chunkIntervalMs);
+  }, [clearUploadChunkTimer, chunkIntervalMs]);
   // Store sample rate separately so it's available even after audioContext is closed
   const recordingSampleRateRef = React.useRef<number | null>(null);
   const sessionIdRef = React.useRef<string | null>(null); // This will be server session ID
@@ -1522,10 +1536,7 @@ const useAudioRecorder = ({
         }).catch(() => { /* non-critical, ignore silently */ });
       }
 
-      const intervalId = window.setInterval(() => {
-        processorRef.current?.port.postMessage({ command: "uploadChunk" });
-      }, chunkIntervalMs);
-      setUploadChunkInterval(intervalId);
+      startUploadChunkTimer();
     } catch (err) {
       console.error("[SERA] Recording start failed:", err);
       // Error handling remains the same...
@@ -1539,33 +1550,30 @@ const useAudioRecorder = ({
     speciality,
     currentDeviceId,
     captureSampleRate,
-    chunkIntervalMs,
+    startUploadChunkTimer,
   ]);
 
   const stopRecording = React.useCallback(async () => {
     console.log("[SERA] Step 3: Stop recording requested");
 
-    if (uploadChunkInterval) {
-      clearInterval(uploadChunkInterval);
-      setUploadChunkInterval(null);
-    }
+    clearUploadChunkTimer();
 
-    if (processorRef.current) {
-      processorRef.current.port.postMessage({ command: "stop" });
+    const processor = processorRef.current;
+    const audioContext = audioContextRef.current;
+    const stream = mediaStreamRef.current;
+
+    if (processor) {
+      processor.port.postMessage({ command: "stop" });
 
       setTimeout(async () => {
-        if (processorRef.current) {
-          processorRef.current.disconnect();
-          processorRef.current = null;
+        processor.disconnect();
+        if (processorRef.current === processor) processorRef.current = null;
+        if (audioContext && audioContext.state !== "closed") {
+          await audioContext.close();
         }
-        if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-          await audioContextRef.current.close();
-          audioContextRef.current = null;
-        }
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-          mediaStreamRef.current = null;
-        }
+        if (audioContextRef.current === audioContext) audioContextRef.current = null;
+        stream?.getTracks().forEach((track) => track.stop());
+        if (mediaStreamRef.current === stream) mediaStreamRef.current = null;
       }, 500);
     }
 
@@ -1584,7 +1592,7 @@ const useAudioRecorder = ({
       console.warn("[SERA] Recording stopped with failed session - showing retry UI");
       setShowRetrySessionPrompt(true);
     }
-  }, [uploadChunkInterval]);
+  }, [clearUploadChunkTimer]);
 
   // Reacquire wake lock if the page becomes visible again while still recording
   // (browsers automatically release wake locks when a page is hidden)
@@ -1665,11 +1673,7 @@ const useAudioRecorder = ({
   const pauseRecording = React.useCallback(() => {
     if (!isRecording || isPaused) return;
 
-    // Stop the upload chunk timer
-    if (uploadChunkInterval) {
-      clearInterval(uploadChunkInterval);
-      setUploadChunkInterval(null);
-    }
+    clearUploadChunkTimer();
 
     setIsPaused(true);
 
@@ -1679,7 +1683,7 @@ const useAudioRecorder = ({
     }
 
     setIsRecording(false);
-  }, [isRecording, isPaused, uploadChunkInterval]);
+  }, [isRecording, isPaused, clearUploadChunkTimer]);
 
   // Add resumeRecording update to reset no audio detection
   const resumeRecording = React.useCallback(() => {
@@ -1694,12 +1698,8 @@ const useAudioRecorder = ({
       processorRef.current.port.postMessage({ command: "resume" });
     }
 
-    // Restart the upload chunk timer at the current chunkIntervalMs
-    const intervalId = window.setInterval(() => {
-      processorRef.current?.port.postMessage({ command: "uploadChunk" });
-    }, chunkIntervalMs);
-    setUploadChunkInterval(intervalId);
-  }, [isPaused, chunkIntervalMs]);
+    startUploadChunkTimer();
+  }, [isPaused, startUploadChunkTimer]);
 
   const processNextChunkInQueue = React.useCallback(async () => {
     // Don't process if already processing or queue is empty

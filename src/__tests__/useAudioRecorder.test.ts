@@ -71,6 +71,29 @@ const defaultProps = {
   onTranscriptionComplete: vi.fn(),
 };
 
+const OriginalAudioContext = globalThis.AudioContext;
+const OriginalAudioWorkletNode = globalThis.AudioWorkletNode;
+
+function trackAudioGraph() {
+  const contexts: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+  const nodes: AudioWorkletNode[] = [];
+  const BaseContext = OriginalAudioContext as unknown as new (...args: unknown[]) => { close: ReturnType<typeof vi.fn> };
+  const BaseNode = OriginalAudioWorkletNode as unknown as new (...args: unknown[]) => AudioWorkletNode;
+  globalThis.AudioContext = class extends BaseContext {
+    constructor(...args: unknown[]) {
+      super(...args);
+      contexts.push(this);
+    }
+  } as unknown as typeof AudioContext;
+  globalThis.AudioWorkletNode = class extends BaseNode {
+    constructor(...args: unknown[]) {
+      super(...args);
+      nodes.push(this);
+    }
+  } as unknown as typeof AudioWorkletNode;
+  return { contexts, nodes };
+}
+
 describe('useAudioRecorder', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -96,6 +119,8 @@ describe('useAudioRecorder', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    globalThis.AudioContext = OriginalAudioContext;
+    globalThis.AudioWorkletNode = OriginalAudioWorkletNode;
   });
 
   describe('validateMicrophoneAccess', () => {
@@ -831,6 +856,149 @@ describe('useAudioRecorder', () => {
 
       expect(result.current.isPaused).toBe(true);
       expect(result.current.isRecording).toBe(false);
+    });
+  });
+
+  describe('stopping then starting again quickly', () => {
+    it('shuts down only the stopped recording, not one started within the stop delay', async () => {
+      const graph = trackAudioGraph();
+      mockMediaDevices.getUserMedia.mockImplementation(() => Promise.resolve(new MockMediaStream()));
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      const firstStream = result.current.mediaStreamRef.current!;
+      await act(async () => {
+        await result.current.stopRecording();
+      });
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      const secondStream = result.current.mediaStreamRef.current!;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      });
+
+      expect(firstStream.getTracks()[0].stop).toHaveBeenCalled();
+      expect(graph.nodes[0].disconnect).toHaveBeenCalled();
+      expect(graph.contexts[0].close).toHaveBeenCalled();
+
+      expect(secondStream.getTracks()[0].stop).not.toHaveBeenCalled();
+      expect(graph.nodes[1].disconnect).not.toHaveBeenCalled();
+      expect(graph.contexts[1].close).not.toHaveBeenCalled();
+      expect(result.current.mediaStreamRef.current).toBe(secondStream);
+      expect(result.current.isRecording).toBe(true);
+    });
+  });
+
+  describe('chunk timer', () => {
+    const CHUNK_MS = 47000;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function uploadChunkPosts(node: AudioWorkletNode) {
+      return (node.port.postMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([message]) => (message as { command?: string })?.command === 'uploadChunk'
+      ).length;
+    }
+
+    it('cuts one chunk per interval while recording', async () => {
+      const graph = trackAudioGraph();
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        vi.advanceTimersByTime(CHUNK_MS * 2);
+      });
+
+      expect(uploadChunkPosts(graph.nodes[0])).toBe(2);
+    });
+
+    it('stops cutting chunks when paused', async () => {
+      const graph = trackAudioGraph();
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+      act(() => {
+        vi.advanceTimersByTime(CHUNK_MS * 2);
+      });
+
+      expect(uploadChunkPosts(graph.nodes[0])).toBe(0);
+    });
+
+    it('runs a single timer after resume', async () => {
+      const graph = trackAudioGraph();
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+      act(() => {
+        result.current.resumeRecording();
+      });
+      act(() => {
+        vi.advanceTimersByTime(CHUNK_MS);
+      });
+
+      expect(uploadChunkPosts(graph.nodes[0])).toBe(1);
+    });
+
+    it('runs a single timer when a recording is started twice', async () => {
+      const graph = trackAudioGraph();
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        vi.advanceTimersByTime(CHUNK_MS);
+      });
+
+      expect(uploadChunkPosts(graph.nodes[1])).toBe(1);
+    });
+
+    it('is cleared by a stopRecording captured before the recording started', async () => {
+      const graph = trackAudioGraph();
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+      const staleStop = result.current.stopRecording;
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      await act(async () => {
+        await staleStop();
+      });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        vi.advanceTimersByTime(CHUNK_MS);
+      });
+
+      expect(uploadChunkPosts(graph.nodes[1])).toBe(1);
     });
   });
 
