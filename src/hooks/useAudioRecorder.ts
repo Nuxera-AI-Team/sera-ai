@@ -1065,7 +1065,8 @@ const useAudioRecorder = ({
             formData.append("audio", audioFile);
             formData.append("model", selectedModelRef.current);
             formData.append("doctorName", doctorName);
-            if (encounterId) formData.append("encounterId", encounterId);
+            // snake_case: the server reads no other spelling and ignores the rest.
+            if (encounterId) formData.append("encounter_id", encounterId);
             if (template) formData.append("template", template);
             if (patientHistory) formData.append("patientHistory", patientHistory);
             if (patientDetailsPayload) {
