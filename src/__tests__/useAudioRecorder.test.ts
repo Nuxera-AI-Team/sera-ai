@@ -1426,7 +1426,7 @@ describe('useAudioRecorder', () => {
         mockFetch.mockClear();
         sendFinalChunk();
 
-        expect((await postedFormData()).get('encounterId')).toBe('encounter-2');
+        expect((await postedFormData()).get('encounter_id')).toBe('encounter-2');
       });
 
       it('should post an encounterId changed during the recording', async () => {
@@ -1441,7 +1441,60 @@ describe('useAudioRecorder', () => {
         mockFetch.mockClear();
         sendFinalChunk();
 
-        expect((await postedFormData()).get('encounterId')).toBe('encounter-2');
+        expect((await postedFormData()).get('encounter_id')).toBe('encounter-2');
+      });
+    });
+
+    // Regression: POST /api/transcribe reads `encounter_id` and nothing else,
+    // and only on the chunk that opens the session. The camelCase field was
+    // accepted with a 200 and dropped, so no session was linked to its
+    // encounter.
+    describe('encounter id on the wire', () => {
+      const postedFormData = async () => {
+        await waitFor(() => {
+          expect(mockFetch).toHaveBeenCalledTimes(1);
+        });
+        const fetchCalls = mockFetch.mock.calls as unknown as Array<[string, { body: FormData }]>;
+        return fetchCalls[0][1].body;
+      };
+
+      const sendChunk = (command: 'chunk' | 'finalChunk') => {
+        act(() => {
+          capturedProcessor!.port.onmessage!({
+            data: {
+              command,
+              audioBuffer: new Float32Array([0.5, 0.3, 0.1]).buffer,
+            },
+          });
+        });
+      };
+
+      it('sends encounter_id on the chunk that opens the session', async () => {
+        const { result } = renderHook(() =>
+          useAudioRecorder({ ...defaultProps, encounterId: '42' })
+        );
+        await act(async () => {
+          result.current.startRecording();
+        });
+        mockFetch.mockClear();
+        sendChunk('chunk');
+
+        const formData = await postedFormData();
+        expect(formData.get('encounter_id')).toBe('42');
+        expect(formData.has('encounterId')).toBe(false);
+      });
+
+      it('sends no encounter field when the consumer passes none', async () => {
+        const { result } = renderHook(() => useAudioRecorder(defaultProps));
+        await act(async () => {
+          result.current.startRecording();
+        });
+        mockFetch.mockClear();
+        sendChunk('finalChunk');
+
+        const formData = await postedFormData();
+        expect(formData.has('encounter_id')).toBe(false);
+        expect(formData.has('encounterId')).toBe(false);
       });
     });
   });

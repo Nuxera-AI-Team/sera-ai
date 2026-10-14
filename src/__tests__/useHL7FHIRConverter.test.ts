@@ -515,6 +515,63 @@ describe('useHL7FHIRConverter', () => {
 
       expect(formData!.get('hl7_request')).toBeTruthy();
     });
+
+    // The server's HL7 transcribe parser has no ENCOUNTER_ID case; it falls
+    // back to the `encounter_id` form field, as it does for JSON.
+    it('should send encounter_id as a form field and keep the ENCOUNTER_ID OBX', async () => {
+      const { result } = renderHook(() => useHL7FHIRConverter());
+
+      const audioFile = new File(['audio data'], 'test.wav', { type: 'audio/wav' });
+      const requestData = {
+        model: 'gpt-4',
+        doctorName: 'Dr. Smith',
+        speciality: 'cardiology',
+        encounterId: '42',
+        removeSilence: false,
+        skipDiarization: false,
+        isFinalChunk: false,
+        isPaused: false,
+        sequence: 0,
+      };
+
+      let formData: FormData;
+      act(() => {
+        formData = result.current.createHL7TranscriptionRequest(audioFile, requestData);
+      });
+
+      expect(formData!.get('encounter_id')).toBe('42');
+      expect(formData!.has('encounterId')).toBe(false);
+      // jsdom's Blob has no text(); FileReader reads it.
+      const hl7 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsText(formData!.get('hl7_request') as Blob);
+      });
+      expect(hl7).toContain('|ENCOUNTER_ID^Encounter Identifier||42|');
+    });
+
+    it('should send no encounter field when none is given', () => {
+      const { result } = renderHook(() => useHL7FHIRConverter());
+
+      const audioFile = new File(['audio data'], 'test.wav', { type: 'audio/wav' });
+      const requestData = {
+        model: 'gpt-4',
+        doctorName: 'Dr. Smith',
+        speciality: 'cardiology',
+        removeSilence: false,
+        skipDiarization: false,
+        isFinalChunk: false,
+        isPaused: false,
+        sequence: 0,
+      };
+
+      let formData: FormData;
+      act(() => {
+        formData = result.current.createHL7TranscriptionRequest(audioFile, requestData);
+      });
+
+      expect(formData!.has('encounter_id')).toBe(false);
+    });
   });
 
   describe('createFHIRTranscriptionRequest', () => {
@@ -568,6 +625,33 @@ describe('useHL7FHIRConverter', () => {
 
       expect(formData!.get('sessionId')).toBe('fhir-session-456');
       expect(formData!.get('isFinalChunk')).toBe('true');
+    });
+
+    // The server's FHIR transcribe parser reads no encounter; it falls back to
+    // the `encounter_id` form field, as it does for JSON.
+    it('should send encounter_id in FormData when provided', () => {
+      const { result } = renderHook(() => useHL7FHIRConverter());
+
+      const audioFile = new File(['audio data'], 'test.wav', { type: 'audio/wav' });
+      const requestData = {
+        model: 'gpt-4',
+        doctorName: 'Dr. Smith',
+        speciality: 'cardiology',
+        encounterId: '42',
+        removeSilence: false,
+        skipDiarization: false,
+        isFinalChunk: false,
+        isPaused: false,
+        sequence: 0,
+      };
+
+      let formData: FormData;
+      act(() => {
+        formData = result.current.createFHIRTranscriptionRequest(audioFile, requestData);
+      });
+
+      expect(formData!.get('encounter_id')).toBe('42');
+      expect(formData!.has('encounterId')).toBe(false);
     });
   });
 
