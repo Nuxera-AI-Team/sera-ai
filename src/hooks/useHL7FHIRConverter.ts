@@ -901,6 +901,11 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       // Add the audio file
       formData.append("audio", audioFile);
 
+      // The server's HL7 parser skips the ENCOUNTER_ID OBX; it takes the form field.
+      if (requestData.encounterId) {
+        formData.append("encounter_id", requestData.encounterId);
+      }
+
       return formData;
     },
     [escapeHL7, formatHL7Date, mapHL7Gender]
@@ -1189,8 +1194,9 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
         formData.append("sessionId", requestData.sessionId);
       }
 
+      // The server's FHIR parser reads no encounter; it takes the form field.
       if (requestData.encounterId) {
-        formData.append("encounterId", requestData.encounterId);
+        formData.append("encounter_id", requestData.encounterId);
       }
 
       if (requestData.template) {
