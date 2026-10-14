@@ -423,7 +423,6 @@ const useAudioDictation = ({
           break;
       }
 
-      console.log("Request headers:", headers);
       console.log("Sending request to API...");
 
       const response = await fetch(`${apiBaseUrl}/api/dictate`, {
@@ -447,14 +446,11 @@ const useAudioDictation = ({
         responseData = await response.text();
       }
 
-      console.log("Raw API response data:", responseData);
-
       // Convert response using the converter
       const convertedData = convertDictationResponse(responseData, selectedFormat);
-      console.log("Converted response data:", convertedData);
 
       if (convertedData.dictation) {
-        console.log("Dictation text received:", convertedData.dictation);
+        console.log(`Dictation text received (${convertedData.dictation.length} chars)`);
         // Pass the dictation text to the callback
         // The parent component will handle appending/replacing
         onDictationComplete(convertedData.dictation);

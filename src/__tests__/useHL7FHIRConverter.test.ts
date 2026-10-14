@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useHL7FHIRConverter } from '../hooks/useHL7FHIRConverter';
+import { captureConsole } from './consoleCapture';
 
 describe('useHL7FHIRConverter', () => {
   beforeEach(() => {
@@ -985,6 +986,47 @@ describe('useHL7FHIRConverter', () => {
       expect(() => {
         result.current.convertFHIRDictationToJson('not valid json {{{');
       }).toThrow();
+    });
+  });
+
+  describe('console output', () => {
+    // V8 quotes the start of the input in a JSON.parse error
+    // (`Unexpected token 'H', "Hemoptysis"... is not valid JSON`), so logging
+    // the error object puts clinical text in the console.
+    const CLINICAL_TEXT = 'Hemoptysis for three days, smoker of 20 pack-years';
+    const QUOTED_PREFIX = 'Hemoptysis';
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('does not log a plain-text DiagnosticReport conclusion', () => {
+      const consoleOutput = captureConsole();
+      const { result } = renderHook(() => useHL7FHIRConverter());
+
+      const fhirBundle = {
+        resourceType: 'Bundle',
+        id: 'bundle-789',
+        entry: [{ resource: { resourceType: 'DiagnosticReport', conclusion: CLINICAL_TEXT } }],
+      };
+
+      let converted: any;
+      act(() => {
+        converted = result.current.convertTranscriptionResponse(fhirBundle, 'fhir');
+      });
+
+      expect(converted.classification['Clinical Summary']).toEqual([CLINICAL_TEXT]);
+      expect(consoleOutput()).not.toContain(QUOTED_PREFIX);
+    });
+
+    it('does not log a non-JSON FHIR dictation body', () => {
+      const consoleOutput = captureConsole();
+      const { result } = renderHook(() => useHL7FHIRConverter());
+
+      expect(() => {
+        result.current.convertFHIRDictationToJson(CLINICAL_TEXT);
+      }).toThrow('Invalid JSON response from server');
+      expect(consoleOutput()).not.toContain(QUOTED_PREFIX);
     });
   });
 });
