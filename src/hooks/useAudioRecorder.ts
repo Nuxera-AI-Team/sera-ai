@@ -16,6 +16,51 @@ import {
 } from "../lib/transcribeV2";
 import { encodePcmToOpus } from "../lib/opusEncoder";
 
+/**
+ * How often a chunk is cut and uploaded when the host says nothing. This is the
+ * cadence the recorder has always used; a host can opt into another.
+ */
+export const DEFAULT_CHUNK_DURATION_MS = 47_000;
+
+/**
+ * nuxera-transcribe accepts at most 120 chunks per v1 session and treats the
+ * 120th as final, so the interval sets the longest recording that is fully
+ * captured: 30s gives 60 minutes. Shorter intervals also run into the per-key
+ * rate limit (200 requests per 15 minutes, shared with other endpoints), and a
+ * 429 ends the session rather than being retried.
+ */
+const MIN_CHUNK_DURATION_MS = 30_000;
+
+/**
+ * Above this a failed upload costs more audio than a consultation can afford to
+ * lose, and the first transcript arrives too late to be worth showing.
+ */
+const MAX_CHUNK_DURATION_MS = 120_000;
+
+/**
+ * A host passing something unusable — NaN from an unparsed env var, 0, a
+ * negative — gets the default rather than a recording that never chunks or
+ * chunks every render. Out-of-range values are clamped rather than rejected,
+ * because refusing to record is a worse answer than recording at the nearest
+ * sane cadence.
+ */
+export const resolveChunkDurationMs = (value: number | undefined): number => {
+  if (value === undefined) return DEFAULT_CHUNK_DURATION_MS;
+  if (!Number.isFinite(value) || value <= 0) {
+    console.warn(
+      `[SERA] chunkDurationMs=${value} is not usable; using the default ${DEFAULT_CHUNK_DURATION_MS}ms`
+    );
+    return DEFAULT_CHUNK_DURATION_MS;
+  }
+  const clamped = Math.min(Math.max(value, MIN_CHUNK_DURATION_MS), MAX_CHUNK_DURATION_MS);
+  if (clamped !== value) {
+    console.warn(
+      `[SERA] chunkDurationMs=${value} is outside [${MIN_CHUNK_DURATION_MS}, ${MAX_CHUNK_DURATION_MS}]; using ${clamped}ms`
+    );
+  }
+  return clamped;
+};
+
 export interface AudioRecorderHookProps {
   apiKey: string;
   apiBaseUrl?: string;
@@ -111,6 +156,26 @@ export interface AudioRecorderHookProps {
    * mid-session is normal — so it is only a signal for the host to warn on.
    */
   prolongedSilenceSeconds?: number;
+  /**
+   * How often a chunk is cut and uploaded, in milliseconds. Defaults to 47000.
+   *
+   * This is the only place the cadence can be set. The server receives whatever
+   * the timer produced and cannot ask for audio sooner, so it can transform a
+   * chunk but never change when one arrives.
+   *
+   * Shorter means the transcript appears sooner and a failed upload costs less
+   * audio; it also multiplies requests, and every cut is another chance to split
+   * a word in half.
+   *
+   * The server accepts at most 120 chunks per v1 session, so this value times
+   * 120 is the longest recording that is fully captured (47000 gives 94
+   * minutes, 30000 gives 60). Anything said after that is not in the note.
+   *
+   * Clamped to [30000, 120000], with a console warning when the value is
+   * changed. Applied on the next start or resume; changing it mid-recording
+   * does not disturb the timer already running.
+   */
+  chunkDurationMs?: number;
   /**
    * v2 only: skip the finalize POST /api/transcribe/medical-note call. Use when
    * the host already owns note generation (e.g. it regenerates the note from a
@@ -414,10 +479,14 @@ const useAudioRecorder = ({
   prolongedSilenceSeconds,
   chunkFormat = "wav",
   opusWorkerUrl,
+  chunkDurationMs = DEFAULT_CHUNK_DURATION_MS,
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
-  const [uploadChunkInterval, setUploadChunkInterval] = useState<number | null>(null);
+  // Resolved once per render and shared by start and resume, so neither can
+  // fall back to a hard-coded interval. A prop change while paused takes effect
+  // on resume.
+  const chunkIntervalMs = resolveChunkDurationMs(chunkDurationMs);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -436,6 +505,21 @@ const useAudioRecorder = ({
   const mediaStreamRef = React.useRef<MediaStream | null>(null);
   const processorRef = React.useRef<AudioWorkletNode | null>(null);
   const audioContextRef = React.useRef<AudioContext | null>(null);
+  const uploadChunkIntervalRef = React.useRef<number | null>(null);
+
+  const clearUploadChunkTimer = React.useCallback(() => {
+    if (uploadChunkIntervalRef.current !== null) {
+      clearInterval(uploadChunkIntervalRef.current);
+      uploadChunkIntervalRef.current = null;
+    }
+  }, []);
+
+  const startUploadChunkTimer = React.useCallback(() => {
+    clearUploadChunkTimer();
+    uploadChunkIntervalRef.current = window.setInterval(() => {
+      processorRef.current?.port.postMessage({ command: "uploadChunk" });
+    }, chunkIntervalMs);
+  }, [clearUploadChunkTimer, chunkIntervalMs]);
   // Store sample rate separately so it's available even after audioContext is closed
   const recordingSampleRateRef = React.useRef<number | null>(null);
   const sessionIdRef = React.useRef<string | null>(null); // This will be server session ID
@@ -1452,10 +1536,7 @@ const useAudioRecorder = ({
         }).catch(() => { /* non-critical, ignore silently */ });
       }
 
-      const intervalId = window.setInterval(() => {
-        processorRef.current?.port.postMessage({ command: "uploadChunk" });
-      }, 47000);
-      setUploadChunkInterval(intervalId);
+      startUploadChunkTimer();
     } catch (err) {
       console.error("[SERA] Recording start failed:", err);
       // Error handling remains the same...
@@ -1469,32 +1550,30 @@ const useAudioRecorder = ({
     speciality,
     currentDeviceId,
     captureSampleRate,
+    startUploadChunkTimer,
   ]);
 
   const stopRecording = React.useCallback(async () => {
     console.log("[SERA] Step 3: Stop recording requested");
 
-    if (uploadChunkInterval) {
-      clearInterval(uploadChunkInterval);
-      setUploadChunkInterval(null);
-    }
+    clearUploadChunkTimer();
 
-    if (processorRef.current) {
-      processorRef.current.port.postMessage({ command: "stop" });
+    const processor = processorRef.current;
+    const audioContext = audioContextRef.current;
+    const stream = mediaStreamRef.current;
+
+    if (processor) {
+      processor.port.postMessage({ command: "stop" });
 
       setTimeout(async () => {
-        if (processorRef.current) {
-          processorRef.current.disconnect();
-          processorRef.current = null;
+        processor.disconnect();
+        if (processorRef.current === processor) processorRef.current = null;
+        if (audioContext && audioContext.state !== "closed") {
+          await audioContext.close();
         }
-        if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-          await audioContextRef.current.close();
-          audioContextRef.current = null;
-        }
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-          mediaStreamRef.current = null;
-        }
+        if (audioContextRef.current === audioContext) audioContextRef.current = null;
+        stream?.getTracks().forEach((track) => track.stop());
+        if (mediaStreamRef.current === stream) mediaStreamRef.current = null;
       }, 500);
     }
 
@@ -1513,7 +1592,7 @@ const useAudioRecorder = ({
       console.warn("[SERA] Recording stopped with failed session - showing retry UI");
       setShowRetrySessionPrompt(true);
     }
-  }, [uploadChunkInterval]);
+  }, [clearUploadChunkTimer]);
 
   // Reacquire wake lock if the page becomes visible again while still recording
   // (browsers automatically release wake locks when a page is hidden)
@@ -1594,11 +1673,7 @@ const useAudioRecorder = ({
   const pauseRecording = React.useCallback(() => {
     if (!isRecording || isPaused) return;
 
-    // Stop the upload chunk timer
-    if (uploadChunkInterval) {
-      clearInterval(uploadChunkInterval);
-      setUploadChunkInterval(null);
-    }
+    clearUploadChunkTimer();
 
     setIsPaused(true);
 
@@ -1608,7 +1683,7 @@ const useAudioRecorder = ({
     }
 
     setIsRecording(false);
-  }, [isRecording, isPaused, uploadChunkInterval]);
+  }, [isRecording, isPaused, clearUploadChunkTimer]);
 
   // Add resumeRecording update to reset no audio detection
   const resumeRecording = React.useCallback(() => {
@@ -1623,12 +1698,8 @@ const useAudioRecorder = ({
       processorRef.current.port.postMessage({ command: "resume" });
     }
 
-    // Restart the upload chunk timer
-    const intervalId = window.setInterval(() => {
-      processorRef.current?.port.postMessage({ command: "uploadChunk" });
-    }, 47000);
-    setUploadChunkInterval(intervalId);
-  }, [isPaused]);
+    startUploadChunkTimer();
+  }, [isPaused, startUploadChunkTimer]);
 
   const processNextChunkInQueue = React.useCallback(async () => {
     // Don't process if already processing or queue is empty

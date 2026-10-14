@@ -556,8 +556,9 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
                 if (conclusionData.classifiedInfo) {
                   classification = conclusionData.classifiedInfo;
                 }
-              } catch (parseError) {
-                console.error("[SERA] Failed to parse DiagnosticReport conclusion:", parseError);
+              } catch {
+                // Not the parse error itself: V8 quotes the start of the input in it.
+                console.error(`[SERA] Failed to parse DiagnosticReport conclusion | chars=${resource.conclusion.length}`);
 
                 // Fallback: store as string if parsing fails
                 if (!classification["Clinical Summary"]) {
@@ -1653,8 +1654,9 @@ export const useHL7FHIRConverter = (): UseHL7FHIRConverterReturn => {
       if (typeof fhirData === "string") {
         try {
           parsedData = JSON.parse(fhirData);
-        } catch (e) {
-          console.error("[SERA] Failed to parse FHIR dictation JSON string:", e);
+        } catch {
+          // Not the parse error itself: V8 quotes the start of the input in it.
+          console.error(`[SERA] Failed to parse FHIR dictation JSON string | chars=${fhirData.length}`);
           throw new Error("Invalid JSON response from server");
         }
       }
