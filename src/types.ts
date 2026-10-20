@@ -64,6 +64,46 @@ export interface AudioRecorderProps {
   chunkDurationMs?: number;
 
   /**
+   * Place the chunk boundary where the speaker stops, instead of where the
+   * interval falls. Off unless `enabled` is set, so existing hosts are
+   * unaffected.
+   *
+   * A boundary that lands mid-word is transcribed as two halves or as nothing,
+   * and nothing downstream can tell which happened. Cutting in a gap avoids
+   * the problem rather than repairing it.
+   *
+   * The window is a share of `chunkDurationMs`, not an absolute, so it keeps
+   * working whatever interval the host chose: from `windowStartRatio` of the
+   * way through, the first `quietMs` of quiet ends the chunk; otherwise the
+   * interval still caps it.
+   *
+   * `ratioEnter`/`ratioExit` are multiples of the tracked room level rather
+   * than fixed loudnesses, which is what lets one setting work in a quiet
+   * office and a humming clinic. Two of them, because speech dips between
+   * syllables and a single bar reads every dip as a pause.
+   */
+  pauseChunking?: {
+    enabled: boolean;
+    /** How far through the interval before a cut may be taken. Default 0.55. */
+    windowStartRatio?: number;
+    /** Quiet needed to end the chunk, in ms. Default 500. */
+    quietMs?: number;
+    /** Multiple of the room level that counts as speech starting. Default 8. */
+    ratioEnter?: number;
+    /** …and as speech ending. Default 5. */
+    ratioExit?: number;
+    /**
+     * Floor the room level cannot fall below. Default 0.004. On digitally
+     * silent input a purely proportional test would otherwise treat every
+     * sample as speech and never find a pause.
+     */
+    minFloor?: number;
+    /** Band the detector listens to. Defaults 300 and 3400 Hz. */
+    bandLowHz?: number;
+    bandHighHz?: number;
+  };
+
+  /**
    * Callback function called on transcription updates (optional)
    */
   onTranscriptionUpdate?: (text: string, sessionId: string) => void;

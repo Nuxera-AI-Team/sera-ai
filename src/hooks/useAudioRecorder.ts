@@ -3,7 +3,7 @@ import useFFmpegConverter from "./useFFmpegConverter";
 import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
-import { ClassificationInfoResponse, PatientDetails } from "../types";
+import { ClassificationInfoResponse, PatientDetails, AudioRecorderProps } from "../types";
 import {
   isValidSampleRate,
   InvalidSampleRateError,
@@ -176,6 +176,13 @@ export interface AudioRecorderHookProps {
    * does not disturb the timer already running.
    */
   chunkDurationMs?: number;
+
+  /**
+   * Place the chunk boundary where the speaker stops rather than where the
+   * interval falls. Off unless `enabled` is set. See AudioRecorderProps in
+   * types.ts for what each value means and why the window is a ratio.
+   */
+  pauseChunking?: AudioRecorderProps["pauseChunking"];
   /**
    * v2 only: skip the finalize POST /api/transcribe/medical-note call. Use when
    * the host already owns note generation (e.g. it regenerates the note from a
@@ -253,6 +260,53 @@ const createAudioProcessorWorker = () => {
         this._maxSilentSamples =
           this._sampleRate * (options?.processorOptions?.prolongedSilenceSeconds || 30);
         this._audioThreshold = 0.002; // Increased from 0.001 to better detect speech
+
+        // ── Pause-based chunking ───────────────────────────────────────────
+        // Off unless the host asks for it, so every existing client keeps the
+        // fixed-interval behaviour exactly as before.
+        //
+        // The cut is placed where the speaker stops rather than where a clock
+        // says, because a boundary that falls mid-word is transcribed as two
+        // halves or as nothing at all, and nothing downstream can tell which.
+        const _pc = (options && options.processorOptions && options.processorOptions.pauseChunking) || {};
+        this._pcEnabled = _pc.enabled === true;
+        // Expressed as a share of the host's chunk interval rather than in
+        // seconds, so this keeps working if that interval changes.
+        this._pcWindowStart = (_pc.windowStartRatio || 0.55);
+        this._pcQuietSamples = this._sampleRate * ((_pc.quietMs || 500) / 1000);
+        this._pcRatioEnter = _pc.ratioEnter || 8;
+        this._pcRatioExit = _pc.ratioExit || 5;
+        this._pcMinFloor = _pc.minFloor || 0.004;
+        // The window is sized against the host's own interval, so the cut stays
+        // within whatever cap the host already chose rather than fighting it.
+        this._pcIntervalSeconds = (options?.processorOptions?.chunkIntervalMs || 47000) / 1000;
+
+        // Speech is judged on 300-3400 Hz only: ventilation rumble and hiss sit
+        // outside the band a voice occupies, and counting them as sound is what
+        // makes a fixed threshold fail in a real room.
+        const _twoPi = 2 * Math.PI;
+        const _hpRc = _twoPi * (_pc.bandLowHz || 300) / this._sampleRate;
+        const _lpRc = _twoPi * (_pc.bandHighHz || 3400) / this._sampleRate;
+        this._pcHpA = 1 / (1 + _hpRc);
+        this._pcLpA = _lpRc / (1 + _lpRc);
+        this._pcHpPrevIn = 0;
+        this._pcHpPrevOut = 0;
+        this._pcLpPrev = 0;
+
+        // How quiet the room is, chased rather than calculated: it falls to meet
+        // silence within about 50ms and only drifts upward over seconds, so a
+        // speaker's own voice cannot drag the bar up to their level.
+        //
+        // The floor is never allowed to reach zero. On digitally silent input a
+        // purely proportional test would then treat every sample as speech, and
+        // no pause would ever be found.
+        this._pcFloor = null;
+        this._pcSpeechLevel = null;
+        this._pcInSpeech = false;
+        this._pcSamplesSinceCut = 0;
+        this._pcQuietRun = 0;
+        this._pcCutReason = null;
+        this._pcCutDepthDb = null;
         this._hasDetectedAudio = false;
         this._totalSilentTime = 0;
         this._lastAudioTime = 0;
@@ -406,6 +460,71 @@ const createAudioProcessorWorker = () => {
             }
           }
 
+          // ── Pause-based chunking: decide whether this is the moment ──
+          if (this._pcEnabled) {
+            this._pcSamplesSinceCut += samples.length;
+
+            // Band-limited level: the same measure, but deaf to anything
+            // outside the range a voice occupies.
+            let _bandSum = 0;
+            for (let i = 0; i < samples.length; i++) {
+              const _x = samples[i];
+              const _hp = this._pcHpA * (this._pcHpPrevOut + _x - this._pcHpPrevIn);
+              this._pcHpPrevIn = _x;
+              this._pcHpPrevOut = _hp;
+              this._pcLpPrev = this._pcLpPrev + this._pcLpA * (_hp - this._pcLpPrev);
+              _bandSum += Math.abs(this._pcLpPrev);
+            }
+            const _band = _bandSum / samples.length;
+
+            // Start at the minimum and let the room raise it, rather than
+            // adopting whatever the first block happened to contain. Recording
+            // often starts mid-sentence, and seeding the floor at speech level
+            // leaves speech unable to clear its own bar.
+            if (this._pcFloor === null) this._pcFloor = this._pcMinFloor;
+            const _base = Math.max(this._pcFloor, this._pcMinFloor);
+
+            // Two thresholds, not one: speech dips between syllables, and a
+            // single bar would read every one of those dips as a pause.
+            this._pcInSpeech = this._pcInSpeech
+              ? _band > _base * this._pcRatioExit
+              : _band > _base * this._pcRatioEnter;
+
+            // The floor only follows the room when nobody is speaking. Letting
+            // it rise during speech makes it climb toward the speaker's own
+            // level, and after a few seconds of continuous talking it overtakes
+            // them: speech stops clearing its own bar and every following gap
+            // reads as a pause that has already lasted the whole sentence.
+            if (!this._pcInSpeech) {
+              this._pcFloor += (_band < this._pcFloor
+                ? (_band - this._pcFloor) * 0.05
+                : (_band - this._pcFloor) * 0.0003);
+            }
+
+            if (this._pcInSpeech) {
+              this._pcQuietRun = 0;
+              this._pcSpeechLevel = this._pcSpeechLevel === null
+                ? _band
+                : this._pcSpeechLevel + (_band - this._pcSpeechLevel) * 0.002;
+            } else {
+              this._pcQuietRun += samples.length;
+            }
+
+            const _elapsed = this._pcSamplesSinceCut / this._sampleRate;
+            if (!this._uploadChunk && !this._uploadingChunk
+                && _elapsed >= this._pcIntervalSeconds * this._pcWindowStart
+                && this._pcQuietRun >= this._pcQuietSamples) {
+              this._pcCutReason = "pause";
+              // How far below this speaker's own level the room has fallen.
+              // The host forwards it so the backend can tell a cut that severed
+              // nothing from one that cut through a word.
+              this._pcCutDepthDb = (this._pcSpeechLevel && _band)
+                ? 20 * Math.log10(Math.max(_band, 1e-9) / this._pcSpeechLevel)
+                : null;
+              this._uploadChunk = true;
+            }
+          }
+
           this._buffer.push(new Float32Array(samples));
           this._bufferSize += samples.length;
 
@@ -430,6 +549,8 @@ const createAudioProcessorWorker = () => {
               this.port.postMessage(
                 {
                   command: "chunk",
+                  cutReason: this._pcCutReason,
+                  cutDepthDb: this._pcCutDepthDb,
                   audioBuffer: flat.buffer,
                   bufferDuration: this._bufferSize / this._sampleRate
                 },
@@ -438,6 +559,8 @@ const createAudioProcessorWorker = () => {
               // Clear buffer after upload
               this._buffer = [];
               this._bufferSize = 0;
+              this._pcSamplesSinceCut = 0;
+              this._pcQuietRun = 0;
             }
 
             this._uploadChunk = false;
@@ -480,6 +603,7 @@ const useAudioRecorder = ({
   chunkFormat = "wav",
   opusWorkerUrl,
   chunkDurationMs = DEFAULT_CHUNK_DURATION_MS,
+  pauseChunking,
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
@@ -629,6 +753,8 @@ const useAudioRecorder = ({
   >([]);
   const isProcessingQueueRef = React.useRef(false);
   const sequenceCounterRef = React.useRef(0);
+  /** Cut depth per chunk, measured on the audio thread, read at upload time. */
+  const cutDepthBySequenceRef = React.useRef<Record<number, number | null>>({});
   const receivedTranscriptionsRef = React.useRef<Map<number, string>>(new Map());
   const nextExpectedSequenceRef = React.useRef(0);
 
@@ -1078,6 +1204,10 @@ const useAudioRecorder = ({
             formData.append("isPaused", isPausedChunk.toString());
             formData.append("sequence", sequence.toString());
             formData.append("speciality", speciality);
+            const reportedDepth = cutDepthBySequenceRef.current[sequence];
+            if (typeof reportedDepth === "number" && Number.isFinite(reportedDepth)) {
+              formData.append("cutDepthDb", reportedDepth.toFixed(2));
+            }
             break;
         }
 
@@ -1467,6 +1597,8 @@ const useAudioRecorder = ({
           sampleRate: audioContext.sampleRate,
           initialSilenceSeconds,
           prolongedSilenceSeconds,
+          chunkIntervalMs,
+          pauseChunking,
         },
       });
 
@@ -1487,6 +1619,10 @@ const useAudioRecorder = ({
         } else if (command === "chunk" && audioBuffer) {
           const sequence = sequenceCounterRef.current++;
           const audioArray = new Float32Array(audioBuffer);
+          // The depth is measured on the audio thread but needed at upload
+          // time, and the two are separated by a queue — so it is held against
+          // the sequence number rather than threaded through every call.
+          cutDepthBySequenceRef.current[sequence] = event.data.cutDepthDb ?? null;
           console.log(`[SERA] Step 4: Chunk received | sequence=${sequence}, samples=${audioArray.length}`);
           enqueueChunk(audioArray, false, sequence);
         } else if (command === "pauseChunk" && audioBuffer) {
