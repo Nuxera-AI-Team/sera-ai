@@ -561,6 +561,14 @@ const createAudioProcessorWorker = () => {
               this._bufferSize = 0;
               this._pcSamplesSinceCut = 0;
               this._pcQuietRun = 0;
+              // Cleared with the buffer, not only when a pause is found. These
+              // describe the cut that has just been sent; left standing, the
+              // next chunk — ended by the timer, or by stop, mid-word —
+              // inherits them and reports a silent boundary it never had. The
+              // backend reads that as licence to skip the overlap, which is
+              // the one mistake the gate exists to avoid.
+              this._pcCutReason = null;
+              this._pcCutDepthDb = null;
             }
 
             this._uploadChunk = false;

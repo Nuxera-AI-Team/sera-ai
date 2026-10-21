@@ -42,7 +42,10 @@ type Message = { command: string; cutReason?: string | null; cutDepthDb?: number
 function load(options: Record<string, unknown> = {}) {
   const source = embeddedSource('useAudioRecorder');
   const messages: Message[] = [];
-  const port = { postMessage: (m: Message) => messages.push(m), onmessage: null };
+  const port: {
+    postMessage: (m: Message) => void;
+    onmessage: ((e: { data: { command: string } }) => void) | null;
+  } = { postMessage: (m: Message) => messages.push(m), onmessage: null };
   const Base = class {
     port = port;
   };
@@ -58,7 +61,7 @@ function load(options: Record<string, unknown> = {}) {
   const node = new Processor({
     processorOptions: { sampleRate: RATE, chunkIntervalMs: 47_000, ...options },
   });
-  return { node, messages };
+  return { node, messages, port };
 }
 
 /**
@@ -186,6 +189,29 @@ describe('pause chunking', () => {
     // depends on where the trackers have settled, so only the direction and a
     // generous bound are asserted.
     expect(cut!.cutDepthDb!).toBeLessThan(-20);
+  });
+
+  it('does not carry a pause reading onto the chunk after it', () => {
+    // The depth describes the boundary it was measured at. Left standing it is
+    // reported again for the next chunk, which the host's timer ended wherever
+    // it happened to fall — and the backend then skips the overlap at a cut
+    // that may have gone straight through a word.
+    const { node, messages, port } = load(ON);
+    feed(node, 30, SPEECH);
+    feed(node, 1, SILENCE);
+    const first = messages.filter((m) => m.command === 'chunk');
+    expect(first).toHaveLength(1);
+    expect(first[0].cutDepthDb).toBeLessThan(-20);
+
+    // The host asks for a cut mid-speech, as its interval timer does.
+    feed(node, 2, SPEECH);
+    port.onmessage!({ data: { command: 'uploadChunk' } });
+    feed(node, 0.1, SPEECH);
+
+    const cuts = messages.filter((m) => m.command === 'chunk');
+    expect(cuts).toHaveLength(2);
+    expect(cuts[1].cutReason).toBeNull();
+    expect(cuts[1].cutDepthDb).toBeNull();
   });
 
   it('measures the next chunk from the cut, not from the start', () => {
