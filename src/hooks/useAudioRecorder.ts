@@ -23,6 +23,24 @@ import { encodePcmToOpus } from "../lib/opusEncoder";
 export const DEFAULT_CHUNK_DURATION_MS = 47_000;
 
 /**
+ * The pause detector's defaults, as the worklet applies them.
+ *
+ * Duplicated rather than interpolated: the worklet is a plain template string
+ * with no substitutions, which is what lets it be lifted out and exercised
+ * directly in a test. A test asserts these numbers still appear in that source,
+ * so the copy cannot drift unnoticed.
+ */
+export const PAUSE_CHUNKING_DEFAULTS = {
+  windowStartRatio: 0.55,
+  quietMs: 500,
+  ratioEnter: 8,
+  ratioExit: 5,
+  minFloor: 0.004,
+  bandLowHz: 300,
+  bandHighHz: 3400,
+} as const;
+
+/**
  * nuxera-transcribe accepts at most 120 chunks per v1 session and treats the
  * 120th as final, so the interval sets the longest recording that is fully
  * captured: 30s gives 60 minutes. Shorter intervals also run into the per-key
@@ -242,6 +260,12 @@ const API_BASE_URL = "https://nuxera.cloud";
 // Embedded Audio Processor Worker - no external files needed
 const createAudioProcessorWorker = () => {
   const workerCode = `
+    // Linear amplitude to dBFS. Null in, null out: a level that was never
+    // measured must stay absent rather than become -180, which reads as a
+    // real and extremely quiet measurement.
+    const _levelToDb = (v) =>
+      (typeof v === "number" && v > 0) ? 20 * Math.log10(v) : null;
+
     class AudioProcessor extends AudioWorkletProcessor {
       constructor(options) {
         super();
@@ -551,6 +575,15 @@ const createAudioProcessorWorker = () => {
                   command: "chunk",
                   cutReason: this._pcCutReason,
                   cutDepthDb: this._pcCutDepthDb,
+                  // The room and the speaker as absolute levels, dBFS.
+                  // cutDepthDb is the ratio between them, and a ratio cannot
+                  // tell a deep pause in a quiet room from the same ratio in a
+                  // noisy one — which is the difference between a reading to
+                  // trust and one to treat carefully. Read at send time rather
+                  // than at the cut, so a chunk the host's timer ended still
+                  // reports the conditions at its boundary.
+                  noiseFloorDb: _levelToDb(this._pcFloor),
+                  speechLevelDb: _levelToDb(this._pcSpeechLevel),
                   audioBuffer: flat.buffer,
                   bufferDuration: this._bufferSize / this._sampleRate
                 },
@@ -761,8 +794,27 @@ const useAudioRecorder = ({
   >([]);
   const isProcessingQueueRef = React.useRef(false);
   const sequenceCounterRef = React.useRef(0);
-  /** Cut depth per chunk, measured on the audio thread, read at upload time. */
-  const cutDepthBySequenceRef = React.useRef<Record<number, number | null>>({});
+  /**
+   * What the audio thread knew about each boundary, held against the sequence
+   * number because measurement and upload are separated by a queue.
+   *
+   * `cutAtSilence` is the one the backend acts on: it says the recorder ended
+   * this chunk in a gap rather than because the interval ran out, so the chunk
+   * after it needs no run-up. The rest is measurement — kept so a boundary can
+   * be explained after the fact instead of guessed at.
+   */
+  const cutInfoBySequenceRef = React.useRef<
+    Record<
+      number,
+      {
+        cutAtSilence: boolean;
+        cutDepthDb: number | null;
+        noiseFloorDb: number | null;
+        speechLevelDb: number | null;
+        recordedDurationSec: number | null;
+      }
+    >
+  >({});
   const receivedTranscriptionsRef = React.useRef<Map<number, string>>(new Map());
   const nextExpectedSequenceRef = React.useRef(0);
 
@@ -1212,9 +1264,42 @@ const useAudioRecorder = ({
             formData.append("isPaused", isPausedChunk.toString());
             formData.append("sequence", sequence.toString());
             formData.append("speciality", speciality);
-            const reportedDepth = cutDepthBySequenceRef.current[sequence];
-            if (typeof reportedDepth === "number" && Number.isFinite(reportedDepth)) {
-              formData.append("cutDepthDb", reportedDepth.toFixed(2));
+            // What the recorder knows about this boundary. The backend sizes
+            // its overlap as a share of the chunk and had been assuming the
+            // interval rather than being told it, so that goes on every chunk.
+            formData.append("chunkIntervalMs", String(chunkIntervalMs));
+            const cutInfo = cutInfoBySequenceRef.current[sequence];
+            if (cutInfo) {
+              // The flag the backend acts on. False covers both "ended by the
+              // interval" and "pause chunking is off", which want the same
+              // treatment: assume the boundary cut through something.
+              formData.append("cutAtSilence", String(cutInfo.cutAtSilence));
+              const appendNumber = (name: string, value: number | null) => {
+                if (typeof value === "number" && Number.isFinite(value)) {
+                  formData.append(name, value.toFixed(2));
+                }
+              };
+              appendNumber("cutDepthDb", cutInfo.cutDepthDb);
+              appendNumber("noiseFloorDb", cutInfo.noiseFloorDb);
+              appendNumber("speechLevelDb", cutInfo.speechLevelDb);
+              // Length as the recorder cut it. The backend measures duration
+              // after trimming silence, so without this a short chunk cannot
+              // be told from a full one that was trimmed down to the same
+              // length — two different events with the same number.
+              appendNumber("recordedDurationSec", cutInfo.recordedDurationSec);
+            }
+            // Once per session, not per chunk: the thresholds are fixed for
+            // the recording, and without them sessions recorded under
+            // different tunings cannot be compared afterwards.
+            if (sequence === 0) {
+              formData.append(
+                "pauseChunkingConfig",
+                JSON.stringify(
+                  pauseChunking?.enabled
+                    ? { ...PAUSE_CHUNKING_DEFAULTS, ...pauseChunking }
+                    : { enabled: false }
+                )
+              );
             }
             break;
         }
@@ -1627,10 +1712,16 @@ const useAudioRecorder = ({
         } else if (command === "chunk" && audioBuffer) {
           const sequence = sequenceCounterRef.current++;
           const audioArray = new Float32Array(audioBuffer);
-          // The depth is measured on the audio thread but needed at upload
-          // time, and the two are separated by a queue — so it is held against
-          // the sequence number rather than threaded through every call.
-          cutDepthBySequenceRef.current[sequence] = event.data.cutDepthDb ?? null;
+          // Measured on the audio thread but needed at upload time, and the
+          // two are separated by a queue — so it is held against the sequence
+          // number rather than threaded through every call.
+          cutInfoBySequenceRef.current[sequence] = {
+            cutAtSilence: event.data.cutReason === "pause",
+            cutDepthDb: event.data.cutDepthDb ?? null,
+            noiseFloorDb: event.data.noiseFloorDb ?? null,
+            speechLevelDb: event.data.speechLevelDb ?? null,
+            recordedDurationSec: event.data.bufferDuration ?? null,
+          };
           console.log(`[SERA] Step 4: Chunk received | sequence=${sequence}, samples=${audioArray.length}`);
           enqueueChunk(audioArray, false, sequence);
         } else if (command === "pauseChunk" && audioBuffer) {

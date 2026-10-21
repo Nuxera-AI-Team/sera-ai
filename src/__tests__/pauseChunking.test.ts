@@ -17,6 +17,7 @@
 //   - a window measured in absolute seconds fought the host's own interval
 //     once that became configurable.
 import { describe, it, expect } from 'vitest';
+import { PAUSE_CHUNKING_DEFAULTS } from '../hooks/useAudioRecorder';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -37,7 +38,14 @@ function embeddedSource(hook: string): string {
   return source;
 }
 
-type Message = { command: string; cutReason?: string | null; cutDepthDb?: number | null };
+type Message = {
+  command: string;
+  cutReason?: string | null;
+  cutDepthDb?: number | null;
+  noiseFloorDb?: number | null;
+  speechLevelDb?: number | null;
+  bufferDuration?: number;
+};
 
 function load(options: Record<string, unknown> = {}) {
   const source = embeddedSource('useAudioRecorder');
@@ -212,6 +220,45 @@ describe('pause chunking', () => {
     expect(cuts).toHaveLength(2);
     expect(cuts[1].cutReason).toBeNull();
     expect(cuts[1].cutDepthDb).toBeNull();
+  });
+
+  it('reports the room and the speaker as absolute levels, not only their ratio', () => {
+    // cutDepthDb is a ratio, so -35 dB in a silent room and -35 dB in a busy
+    // clinic are indistinguishable by it alone. These two say which was which.
+    const { node, messages } = load(ON);
+    feed(node, 30, SPEECH);
+    feed(node, 1, SILENCE);
+    const cut = messages.find((m) => m.command === 'chunk')!;
+    expect(cut.noiseFloorDb).toBeLessThan(0);
+    expect(cut.speechLevelDb).toBeLessThan(0);
+    // The speaker has to sit above the room, or the detector could not have
+    // called speech at all.
+    expect(cut.speechLevelDb!).toBeGreaterThan(cut.noiseFloorDb!);
+    // And the ratio of the two is what cutDepthDb was measuring.
+    expect(cut.cutDepthDb!).toBeLessThan(0);
+  });
+
+  it('reports the length it actually cut', () => {
+    // The backend measures duration after trimming silence, so a 26s row
+    // could be a pause cut at 26s or a 47s chunk trimmed down. This is the
+    // only number that separates them.
+    const { node, messages } = load(ON);
+    feed(node, 30, SPEECH);
+    feed(node, 1, SILENCE);
+    const cut = messages.find((m) => m.command === 'chunk')!;
+    expect(cut.bufferDuration).toBeGreaterThan(29);
+    expect(cut.bufferDuration).toBeLessThan(32);
+  });
+
+  it('keeps the exported defaults in step with the worklet', () => {
+    // The worklet is a template string with no substitutions, which is what
+    // lets this file lift it out and run it. The cost is that its defaults are
+    // a second copy of PAUSE_CHUNKING_DEFAULTS; this is what stops the two
+    // drifting apart silently.
+    const source = embeddedSource('useAudioRecorder');
+    for (const [name, value] of Object.entries(PAUSE_CHUNKING_DEFAULTS)) {
+      expect(source, `${name} missing from the worklet`).toContain(`_pc.${name} || ${value}`);
+    }
   });
 
   it('measures the next chunk from the cut, not from the start', () => {
