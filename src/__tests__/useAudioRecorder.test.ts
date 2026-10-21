@@ -1107,6 +1107,66 @@ describe('useAudioRecorder', () => {
       (globalThis as any).AudioWorkletNode = OriginalAudioWorkletNode;
     });
 
+    // The worklet can end a chunk before the interval is up, at a pause. The
+    // host's timer has to be restarted from that boundary — left on its
+    // original schedule it fires again with only the remainder left on it,
+    // cutting a fragment out of the middle of the next sentence. A real
+    // four-minute session came back as 15 chunks instead of 8 this way, six of
+    // them under thirteen seconds; one held two words.
+    describe('the chunk timer after a pause cut', () => {
+      const INTERVAL = 30_000;
+      const props = { ...defaultProps, chunkDurationMs: INTERVAL, pauseChunking: { enabled: true } };
+
+      /** setInterval calls for the chunk cadence, ignoring every other timer. */
+      const chunkTimers = (spy: ReturnType<typeof vi.spyOn>) =>
+        spy.mock.calls.filter((call) => call[1] === INTERVAL);
+
+      const deliverChunk = async (cutReason: string | null) => {
+        const setIntervalSpy = vi.spyOn(window, 'setInterval');
+        const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+        const { result } = renderHook(() => useAudioRecorder(props));
+
+        await act(async () => {
+          result.current.startRecording();
+        });
+        expect(chunkTimers(setIntervalSpy)).toHaveLength(1);
+
+        setIntervalSpy.mockClear();
+        clearIntervalSpy.mockClear();
+
+        act(() => {
+          capturedProcessor!.port.onmessage!({
+            data: {
+              command: 'chunk',
+              cutReason,
+              cutDepthDb: cutReason === 'pause' ? -34 : null,
+              bufferDuration: 20,
+              audioBuffer: new Float32Array([0.1, 0.2]).buffer,
+            },
+          });
+        });
+
+        return { setIntervalSpy, clearIntervalSpy };
+      };
+
+      it('restarts, so the next interval is measured from the cut', async () => {
+        const { setIntervalSpy, clearIntervalSpy } = await deliverChunk('pause');
+        expect(clearIntervalSpy).toHaveBeenCalled();
+        expect(chunkTimers(setIntervalSpy)).toHaveLength(1);
+        setIntervalSpy.mockRestore();
+        clearIntervalSpy.mockRestore();
+      });
+
+      it('is left alone when the timer itself ended the chunk', async () => {
+        // Restarting here would be harmless but pointless: the timer has only
+        // just fired, so it is already counting from this boundary.
+        const { setIntervalSpy, clearIntervalSpy } = await deliverChunk(null);
+        expect(chunkTimers(setIntervalSpy)).toHaveLength(0);
+        setIntervalSpy.mockRestore();
+        clearIntervalSpy.mockRestore();
+      });
+    });
+
     it('should apply silence removal and convert to FLAC when silenceRemoval is enabled', async () => {
       const props = { ...defaultProps, silenceRemoval: true };
       const { result } = renderHook(() => useAudioRecorder(props));

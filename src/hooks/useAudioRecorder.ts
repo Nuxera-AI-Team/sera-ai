@@ -1237,8 +1237,10 @@ const useAudioRecorder = ({
             formData = createFHIRTranscriptionRequest(audioFile, requestData);
             break;
 
+          // Braced: the boundary report below needs its own declarations, and
+          // a bare case shares the switch's scope with every other arm.
           case "json":
-          default:
+          default: {
             // Original JSON format
             formData = new FormData();
 
@@ -1302,6 +1304,7 @@ const useAudioRecorder = ({
               );
             }
             break;
+          }
         }
 
         // Prepare headers
@@ -1722,6 +1725,11 @@ const useAudioRecorder = ({
             speechLevelDb: event.data.speechLevelDb ?? null,
             recordedDurationSec: event.data.bufferDuration ?? null,
           };
+          // The worklet ended this chunk early, so the next interval runs from
+          // this boundary. Left on its original schedule the timer fires again
+          // with only the remainder left on it, cutting a fragment out of the
+          // middle of the next sentence.
+          if (event.data.cutReason === "pause") startUploadChunkTimer();
           console.log(`[SERA] Step 4: Chunk received | sequence=${sequence}, samples=${audioArray.length}`);
           enqueueChunk(audioArray, false, sequence);
         } else if (command === "pauseChunk" && audioBuffer) {
