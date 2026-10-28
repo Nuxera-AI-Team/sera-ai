@@ -208,6 +208,21 @@ export interface AudioRecorderHookProps {
    * with the combined transcript and an empty classification. Defaults to false.
    */
   skipNoteGeneration?: boolean;
+  /**
+   * The server's own answer to each chunk, exactly as it arrived.
+   *
+   * The two callbacks below are shaped for the transcript and hand back three
+   * values out of that answer. A field they do not name reaches no host at
+   * all, and `truncated` is one: the backend sets it when it ended the
+   * recording itself because the session hit its limit, and without it a
+   * consultation that ran long produces a note that simply stops and looks
+   * complete.
+   *
+   * Typed loosely on purpose. This is the seam a host reads a response field
+   * through without the package being republished for each new one.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onSuccess?: (data: any) => void;
   onTranscriptionUpdate: (text: string, sessionId: string) => void;
   onTranscriptionComplete: (
     text: string,
@@ -645,6 +660,7 @@ const useAudioRecorder = ({
   opusWorkerUrl,
   chunkDurationMs = DEFAULT_CHUNK_DURATION_MS,
   pauseChunking,
+  onSuccess,
   onTranscriptionUpdate,
   onTranscriptionComplete,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
@@ -1391,6 +1407,11 @@ const useAudioRecorder = ({
           }
         );
 
+        // Handed over before this package reshapes it, and before the
+        // conversion below, which is a local step that can fail on its own:
+        // what this reports is that the request succeeded.
+        onSuccess?.(data);
+
         // Convert response OUTSIDE of retry loop - this is a local operation
         const convertedData = convertTranscriptionResponse(data, selectedFormatRef.current);
 
@@ -1526,6 +1547,7 @@ const useAudioRecorder = ({
       template,
       patientHistory,
       patientDetails,
+      onSuccess,
       onTranscriptionComplete,
       speciality,
       removeSilence,

@@ -1333,6 +1333,67 @@ describe('useAudioRecorder', () => {
       expect(audioFile.type).toBe('audio/flac');
     });
 
+    // The typed callbacks hand back three values out of the server's answer,
+    // so a field they do not name reaches no host at all. `truncated` is the
+    // one that matters: the backend sets it when IT ended the recording,
+    // because the session hit its limit. Without a way through, a consultation
+    // that ran long produces a note that simply stops and looks complete.
+    describe('onSuccess', () => {
+      const deliverChunk = () => {
+        act(() => {
+          capturedProcessor!.port.onmessage!({
+            data: { command: 'chunk', audioBuffer: new Float32Array([0.5, 0.3]).buffer },
+          });
+        });
+      };
+
+      it('hands over the response as it arrived, fields the typed callbacks drop included', async () => {
+        const onSuccess = vi.fn();
+        const truncated = {
+          reason: 'duration',
+          message: 'This recording reached the maximum length for one session.',
+        };
+        mockFetch.mockClear();
+        (mockFetch as unknown as { mockImplementationOnce: (f: () => unknown) => void }).mockImplementationOnce(() =>
+          Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({
+              sessionId: 'mock-session-id',
+              transcription: 'mock transcription',
+              classifiedInfo: {},
+              truncated,
+            }),
+            text: () => Promise.resolve(''),
+          })
+        );
+
+        const { result } = renderHook(() => useAudioRecorder({ ...defaultProps, onSuccess }));
+        await act(async () => {
+          result.current.startRecording();
+        });
+        deliverChunk();
+
+        await waitFor(() => {
+          expect(onSuccess).toHaveBeenCalledTimes(1);
+        });
+        expect(onSuccess.mock.calls[0][0]).toMatchObject({ truncated });
+      });
+
+      it('is optional, and the upload is unaffected without it', async () => {
+        mockFetch.mockClear();
+        const { result } = renderHook(() => useAudioRecorder(defaultProps));
+        await act(async () => {
+          result.current.startRecording();
+        });
+        deliverChunk();
+
+        await waitFor(() => {
+          expect(mockFetch).toHaveBeenCalledTimes(1);
+        });
+      });
+    });
+
     it('should fall back to WAV when FLAC conversion fails', async () => {
       // Make FLAC conversion fail
       mockFFmpegFns.convertToFlac.mockRejectedValueOnce(new Error('FLAC conversion failed'));

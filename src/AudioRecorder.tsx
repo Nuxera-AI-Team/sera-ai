@@ -126,6 +126,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   selectedFormat = "json",
   chunkDurationMs,
   pauseChunking,
+  onSuccess,
   onTranscriptionUpdate,
   onTranscriptionComplete,
   onError,
@@ -167,6 +168,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
     selectedFormat: selectedFormat,
     chunkDurationMs: chunkDurationMs,
     pauseChunking: pauseChunking,
+    onSuccess: onSuccess,
     onTranscriptionUpdate: (text, sessionId) => {
       console.log(`[SERA] Transcription update received | sessionId=${sessionId}, textLength=${text.length}`);
       if (text.length > 0) {
