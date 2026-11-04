@@ -80,7 +80,7 @@ The main component for real-time audio recording with AI-powered transcription. 
 - Records audio from the user's microphone via the Web Audio API
 - Streams audio to the Sera AI cloud for real-time transcription
 - Supports medical speciality-specific transcription models
-- Automatically persists failed sessions to IndexedDB and offers retry
+- Keeps each recording's audio in IndexedDB until its note arrives, and offers a retry if the upload fails
 - Renders an animated waveform visualizer during recording
 - Outputs results in JSON, HL7 v2.5, or FHIR R4 format
 
@@ -184,7 +184,7 @@ The component automatically manages these visual states:
 
 - **Real-time visualization** — Animated waveform with particle effects during recording
 - **Pause/Resume** — Pause recording without losing progress
-- **Session recovery** — Failed sessions are saved to IndexedDB and can be retried
+- **Session recovery** — Every recording's audio is saved in the browser's IndexedDB while it is transcribed, with its speciality and sample rate but no patient details, and deleted once the note arrives. If an upload fails, the recorder offers to retry that recording, and only that one. Saved audio older than 12 hours, including a recording interrupted by closing the tab, is deleted the next time a recorder opens the store
 - **Auto microphone validation** — Detects missing or silent microphones on start
 - **Toast notifications** — Shows errors as temporary toast messages
 - **Dark mode support** — All error/warning panels support light and dark themes
