@@ -796,7 +796,8 @@ const useAudioRecorder = ({
 
   // NOTE: We no longer show retry prompt on mount - only when user stops recording after a failure
   // This ensures the user isn't interrupted with retry prompts from previous sessions
-  // Failed sessions remain in IndexedDB and can be retried if the user starts a new recording
+  // A failed recording's audio stays in IndexedDB until it expires after 12 hours. Only this
+  // recorder's latest recording can be retried; an earlier one is never resent
 
   // Update clear function to work with sessions
   const clearAllSessions = React.useCallback(async () => {
@@ -1011,7 +1012,9 @@ const useAudioRecorder = ({
               sessionIdRef.current || localSessionIdRef.current || ""
             );
 
-            if (localSessionIdRef.current) {
+            // A retry's session is deleted by retryFailedSession, by its own
+            // id: the ref may already name a newer recording.
+            if (!retry && localSessionIdRef.current) {
               await markSessionComplete(localSessionIdRef.current);
               setShowRetrySessionPrompt(false);
             }
@@ -1209,8 +1212,10 @@ const useAudioRecorder = ({
             sessionIdRef.current!
           );
 
-          // Clear LOCAL session only on successful final chunk + medical note generation
-          if (localSessionIdRef.current) {
+          // Clear LOCAL session only on successful final chunk + medical note
+          // generation. A retry's session is deleted by retryFailedSession, by
+          // its own id: the ref may already name a newer recording.
+          if (!retry && localSessionIdRef.current) {
             await markSessionComplete(localSessionIdRef.current);
             setShowRetrySessionPrompt(false);
           }
@@ -1320,14 +1325,19 @@ const useAudioRecorder = ({
   // Assign the function to the ref for use in callbacks
   uploadChunkToServerRef.current = uploadChunkToServer;
 
-  // Update the retry function to work with sessions
+  // Retry only the recording this recorder made. Any other stored session is
+  // an earlier recording, possibly another patient's, and would go out with
+  // this recorder's current encounter and patient details.
   const retryFailedSession = React.useCallback(async () => {
     setIsRetryingSession(true);
     let retrySucceeded = false;
     let failedSessionId: string | null = null;
+    // Read once, so a recording started during the retry changes neither what
+    // is resent nor what is deleted.
+    const ownSessionId = localSessionIdRef.current;
 
     try {
-      const failedSession = await getFailedSession();
+      const failedSession = ownSessionId ? await getFailedSession(ownSessionId) : null;
       failedSessionId = failedSession?.id || null;
 
       if (failedSession) {
@@ -1442,11 +1452,10 @@ const useAudioRecorder = ({
         audioContext = new AudioContextClass();
       }
 
-      // Create session with actual sample rate now that we have audioContext
+      // Create session with actual sample rate now that we have audioContext.
+      // The store gets what a retry reads back and nothing about the patient.
       if (!isPaused && localSessionIdRef.current) {
         await createSession(localSessionIdRef.current, {
-          patientDetails: patientDetails || undefined,
-          patientHistory: patientHistory || undefined,
           speciality,
           sampleRate: audioContext.sampleRate,
         });
@@ -1546,8 +1555,6 @@ const useAudioRecorder = ({
     validateMicrophoneAccess,
     isPaused,
     createSession,
-    patientHistory,
-    patientDetails,
     speciality,
     currentDeviceId,
     captureSampleRate,

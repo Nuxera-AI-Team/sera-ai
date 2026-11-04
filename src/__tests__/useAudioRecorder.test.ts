@@ -31,19 +31,32 @@ vi.mock('../hooks/useFFmpegConverter', () => ({
 }));
 
 const mockRecoveryFns = vi.hoisted(() => ({
-  createSession: vi.fn(() => Promise.resolve()),
+  createSession: vi.fn((_sessionId: string, _metadata: Record<string, unknown>) => Promise.resolve()),
   appendAudioToSession: vi.fn(() => Promise.resolve()),
-  markSessionComplete: vi.fn(() => Promise.resolve()),
+  markSessionComplete: vi.fn((_sessionId: string) => Promise.resolve()),
   markSessionFailed: vi.fn(() => Promise.resolve()),
   retrySession: vi.fn((_sessionId: string) => Promise.resolve(true)),
   deleteSession: vi.fn((_sessionId: string) => Promise.resolve()),
-  getFailedSession: vi.fn((): Promise<{ id: string } | null> => Promise.resolve(null)),
+  getFailedSession: vi.fn(
+    (_sessionId?: string): Promise<{ id: string } | null> => Promise.resolve(null)
+  ),
   clearFailedSessions: vi.fn(() => Promise.resolve()),
 }));
 
+type ReprocessSession = (
+  audioChunks: Float32Array[],
+  metadata: { sampleRate: number }
+) => Promise<void>;
+
+// The recorder hands useAudioRecovery the function that resends saved audio.
+// A test driving a retry end to end calls it the way retrySession would.
+const recovery = vi.hoisted(() => ({ reprocess: null as ReprocessSession | null }));
+
 vi.mock('../hooks/useAudioRecovery', () => ({
-  default: (_callback: (audioChunks: Float32Array[], metadata: Record<string, unknown>) => Promise<void>) =>
-    mockRecoveryFns,
+  default: (callback: ReprocessSession) => {
+    recovery.reprocess = callback;
+    return mockRecoveryFns;
+  },
 }));
 
 // Stable across renders, as the real hook's useCallback results are. Fresh
@@ -564,27 +577,36 @@ describe('useAudioRecorder', () => {
       expect(result.current.showRetrySessionPrompt).toBe(false);
     });
 
-    it('should delete the stored session once a retry succeeds', async () => {
-      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: 'session-1' });
-      mockRecoveryFns.retrySession.mockResolvedValue(true);
+    // Starts a recording and returns the id of the session it stored.
+    const recordOnce = async (result: { current: ReturnType<typeof useAudioRecorder> }) => {
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      const calls = mockRecoveryFns.createSession.mock.calls;
+      return calls[calls.length - 1][0];
+    };
 
+    it('should delete the stored session once a retry succeeds', async () => {
       const { result } = renderHook(() => useAudioRecorder(defaultProps));
+      const sessionId = await recordOnce(result);
+      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: sessionId });
+      mockRecoveryFns.retrySession.mockResolvedValue(true);
 
       await act(async () => {
         await result.current.retryFailedSession();
       });
 
-      expect(mockRecoveryFns.deleteSession).toHaveBeenCalledWith('session-1');
+      expect(mockRecoveryFns.deleteSession).toHaveBeenCalledWith(sessionId);
       expect(result.current.showRetrySessionPrompt).toBe(false);
     });
 
     // Regression: the stored audio is the only remaining copy, so a retry that
     // could not rebuild the full recording must leave it on disk.
     it('should keep the stored session when a retry fails', async () => {
-      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: 'session-1' });
-      mockRecoveryFns.retrySession.mockResolvedValue(false);
-
       const { result } = renderHook(() => useAudioRecorder(defaultProps));
+      const sessionId = await recordOnce(result);
+      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: sessionId });
+      mockRecoveryFns.retrySession.mockResolvedValue(false);
 
       await act(async () => {
         await result.current.retryFailedSession();
@@ -592,6 +614,92 @@ describe('useAudioRecorder', () => {
 
       expect(mockRecoveryFns.deleteSession).not.toHaveBeenCalled();
       expect(result.current.showRetrySessionPrompt).toBe(true);
+    });
+
+    // Regression: retry took the oldest failed session in the store, possibly
+    // an earlier patient's, and sent it with this recorder's current encounter
+    // and patient details.
+    it('should not retry a stored session this recorder did not record', async () => {
+      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: 'earlier-recording' });
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.retryFailedSession();
+      });
+
+      expect(mockRecoveryFns.retrySession).not.toHaveBeenCalled();
+      expect(mockRecoveryFns.deleteSession).not.toHaveBeenCalled();
+      expect(result.current.showRetrySessionPrompt).toBe(false);
+    });
+
+    it('should retry its own recording, not an older failed one', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+      const ownId = await recordOnce(result);
+      // The store also holds an earlier failed recording, which comes back for
+      // any lookup that is not by this recorder's own session id.
+      mockRecoveryFns.getFailedSession.mockImplementation((sessionId?: string) =>
+        Promise.resolve({ id: sessionId === ownId ? ownId : 'earlier-recording' })
+      );
+
+      await act(async () => {
+        await result.current.retryFailedSession();
+      });
+
+      expect(mockRecoveryFns.retrySession.mock.calls).toEqual([[ownId]]);
+      expect(mockRecoveryFns.deleteSession.mock.calls).toEqual([[ownId]]);
+    });
+
+    // Regression: a successful retry also deleted whichever record the
+    // recorder pointed at by then. If a new recording had started meanwhile,
+    // that was the new recording's audio: its only copy should its upload fail.
+    it('should delete only the retried recording', async () => {
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+      const retriedId = await recordOnce(result);
+      mockRecoveryFns.getFailedSession.mockImplementation((sessionId?: string) =>
+        Promise.resolve(
+          sessionId === undefined || sessionId === retriedId ? { id: retriedId } : null
+        )
+      );
+      mockRecoveryFns.retrySession.mockImplementation(async () => {
+        // A new recording starts while the saved audio is being resent.
+        await result.current.startRecording();
+        await recovery.reprocess!([new Float32Array([0.5, 0.3, 0.1])], { sampleRate: 44100 });
+        return true;
+      });
+
+      await act(async () => {
+        await result.current.retryFailedSession();
+      });
+
+      const newId = mockRecoveryFns.createSession.mock.calls[1][0];
+      expect(newId).not.toBe(retriedId);
+      expect(mockRecoveryFns.markSessionComplete).not.toHaveBeenCalledWith(newId);
+      expect(mockRecoveryFns.deleteSession.mock.calls).toEqual([[retriedId]]);
+    });
+  });
+
+  // The crash-recovery store keeps the recording's audio on the device until
+  // its note arrives, and up to 12 hours when an upload fails. Retry never
+  // read patient fields back, so they are not stored.
+  describe('crash-recovery store', () => {
+    it('should store only the speciality and sample rate of a recording', async () => {
+      const { result } = renderHook(() =>
+        useAudioRecorder({
+          ...defaultProps,
+          patientDetails: { id: 1, gender: 'FIXTURE-GENDER', age: 1 },
+          patientHistory: 'FIXTURE-HISTORY',
+        })
+      );
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+
+      expect(mockRecoveryFns.createSession).toHaveBeenCalledTimes(1);
+      expect(mockRecoveryFns.createSession).toHaveBeenCalledWith(expect.any(String), {
+        speciality: 'general',
+        sampleRate: 44100,
+      });
     });
   });
 
@@ -1495,6 +1603,32 @@ describe('useAudioRecorder', () => {
         const formData = await postedFormData();
         expect(formData.has('encounter_id')).toBe(false);
         expect(formData.has('encounterId')).toBe(false);
+      });
+    });
+
+    // The crash-recovery store no longer keeps patient details, but the
+    // request still carries them: the note is written with them.
+    describe('patient details on the wire', () => {
+      it('still sends the patient details with each chunk', async () => {
+        const patientDetails = { id: 1, gender: 'FIXTURE-GENDER', age: 1 };
+        const { result } = renderHook(() => useAudioRecorder({ ...defaultProps, patientDetails }));
+        await act(async () => {
+          result.current.startRecording();
+        });
+        mockFetch.mockClear();
+        act(() => {
+          capturedProcessor!.port.onmessage!({
+            data: { command: 'chunk', audioBuffer: new Float32Array([0.5, 0.3, 0.1]).buffer },
+          });
+        });
+
+        await waitFor(() => {
+          expect(mockFetch).toHaveBeenCalledTimes(1);
+        });
+        const fetchCalls = mockFetch.mock.calls as unknown as Array<[string, { body: FormData }]>;
+        expect(JSON.parse(fetchCalls[0][1].body.get('patientDetails') as string)).toEqual(
+          patientDetails
+        );
       });
     });
   });
