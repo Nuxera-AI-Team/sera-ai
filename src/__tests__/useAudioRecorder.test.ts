@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as React from 'react';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import useAudioRecorder from '../hooks/useAudioRecorder';
 import { mockMediaDevices, MockMediaStream, mockFetch } from './setup';
@@ -105,6 +106,63 @@ function trackAudioGraph() {
     }
   } as unknown as typeof AudioWorkletNode;
   return { contexts, nodes };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+// How many times the recorder posted `command` to a worklet node.
+function postsOf(node: AudioWorkletNode, command: string) {
+  return (node.port.postMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
+    ([message]) => (message as { command?: string })?.command === command
+  ).length;
+}
+
+// The worklet message handler the recorder installed, held so a test can still
+// deliver a message after the recorder has let go of the node.
+function handlerOf(node: AudioWorkletNode) {
+  const handler = node.port.onmessage as unknown as (event: { data: unknown }) => void;
+  return (data: unknown) => handler({ data });
+}
+
+const audioMessage = (command: 'chunk' | 'finalChunk') => ({
+  command,
+  audioBuffer: new Float32Array([0.5, 0.3, 0.1]).buffer,
+});
+
+type FetchResponse = Awaited<ReturnType<typeof mockFetch>>;
+
+const fetchResponse = (status: number): FetchResponse => ({
+  ok: status < 400,
+  status,
+  json: () =>
+    Promise.resolve({
+      sessionId: 'mock-session-id',
+      transcription: 'mock transcription',
+      classifiedInfo: {},
+    }),
+  text: () => Promise.resolve(status < 400 ? '' : 'unavailable'),
+});
+
+// Fake timers only: runs the timers due within `ms` and lets every promise
+// chain started so far settle (the upload pipeline is a chain of mocks).
+const flushAsync = (ms = 0) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+
+// jsdom has no Screen Wake Lock API, so the recorder skips it unless a test
+// installs one. Returns the uninstaller.
+function fakeWakeLock(request: () => Promise<{ release: () => Promise<void> }>) {
+  Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request } });
+  return () => {
+    delete (navigator as { wakeLock?: unknown }).wakeLock;
+  };
 }
 
 describe('useAudioRecorder', () => {
@@ -1127,6 +1185,433 @@ describe('useAudioRecorder', () => {
 
       expect(result.current.isRecording).toBe(true);
       expect(result.current.isPaused).toBe(false);
+    });
+  });
+
+  // A recording can be stopped twice: an unplugged microphone ends the track
+  // and fires a devicechange, and each path stops the recording. The worklet
+  // answered the second stop with another, empty final chunk.
+  describe('stopping twice', () => {
+    it('asks the worklet for one final chunk', async () => {
+      const graph = trackAudioGraph();
+      const { result } = renderHook(() => useAudioRecorder(defaultProps));
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      await act(async () => {
+        await result.current.stopRecording();
+        await result.current.stopRecording();
+      });
+
+      expect(postsOf(graph.nodes[0], 'stop')).toBe(1);
+    });
+  });
+
+  // The recorder used to clean up only its listeners on unmount. Its
+  // microphone, audio graph, chunk timer and wake lock kept running, and it
+  // went on uploading chunks with its last props: a host that moved on to
+  // another encounter had the next consultation sent into the previous one.
+  describe('unmounting', () => {
+    const CHUNK_MS = 47000;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+      // A stream per call, so the access check's test stream, which is stopped
+      // straight away, is never mistaken for the recording's.
+      mockMediaDevices.getUserMedia.mockImplementation(() =>
+        Promise.resolve(new MockMediaStream())
+      );
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function startRecorder() {
+      const graph = trackAudioGraph();
+      const hook = renderHook(() => useAudioRecorder(defaultProps));
+      await act(async () => {
+        await hook.result.current.startRecording();
+      });
+      const stream = hook.result.current.mediaStreamRef.current!;
+      return { ...hook, graph, stream, deliver: handlerOf(graph.nodes[0]) };
+    }
+
+    describe('mid-recording', () => {
+      it('stops the microphone and closes the audio graph', async () => {
+        const { unmount, graph, stream } = await startRecorder();
+        expect(stream.getTracks()[0].stop).not.toHaveBeenCalled();
+
+        unmount();
+
+        expect(stream.getTracks()[0].stop).toHaveBeenCalled();
+        expect(graph.nodes[0].disconnect).toHaveBeenCalled();
+        expect(graph.contexts[0].close).toHaveBeenCalled();
+      });
+
+      it('clears the chunk timer', async () => {
+        const { unmount, graph } = await startRecorder();
+        expect(vi.getTimerCount()).toBe(1);
+
+        unmount();
+
+        expect(vi.getTimerCount()).toBe(0);
+        act(() => {
+          vi.advanceTimersByTime(CHUNK_MS * 2);
+        });
+        expect(postsOf(graph.nodes[0], 'uploadChunk')).toBe(0);
+      });
+
+      it('sends no chunk the worklet hands over after it unmounts', async () => {
+        const { unmount, deliver } = await startRecorder();
+        // While mounted a chunk goes out, so the pipeline is live in this test.
+        act(() => deliver(audioMessage('chunk')));
+        await flushAsync();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+
+        unmount();
+        act(() => {
+          deliver(audioMessage('chunk'));
+          deliver(audioMessage('finalChunk'));
+        });
+        await flushAsync();
+
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(mockRecoveryFns.appendAudioToSession).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not send a chunk it was preparing, nor one queued behind it', async () => {
+        const wav = deferred<File>();
+        mockFFmpegFns.convertToWav.mockImplementationOnce(() => wav.promise);
+        const { unmount, deliver } = await startRecorder();
+        act(() => {
+          deliver(audioMessage('chunk'));
+          deliver(audioMessage('chunk'));
+        });
+        await flushAsync();
+        expect(mockFFmpegFns.convertToWav).toHaveBeenCalledTimes(1);
+
+        unmount();
+        wav.resolve(new File(['mock-wav'], 'audio-chunk.wav', { type: 'audio/wav' }));
+        await flushAsync();
+
+        expect(mockFetch).not.toHaveBeenCalled();
+        // The queued chunk's audio isn't even stored on the device.
+        expect(mockRecoveryFns.appendAudioToSession).toHaveBeenCalledTimes(1);
+        // Dropped on purpose, not failed: nothing is kept for a retry.
+        expect(mockRecoveryFns.markSessionFailed).not.toHaveBeenCalled();
+      });
+
+      it('does not retry an upload that fails after it unmounts', async () => {
+        const response = deferred<FetchResponse>();
+        mockFetch.mockImplementationOnce(() => response.promise);
+        const { unmount, deliver } = await startRecorder();
+        act(() => deliver(audioMessage('chunk')));
+        await flushAsync();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+
+        unmount();
+        response.resolve(fetchResponse(503));
+        // Past every backoff p-retry could wait: 3 retries, 10s at most each.
+        await flushAsync(60_000);
+
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(mockRecoveryFns.markSessionFailed).not.toHaveBeenCalled();
+      });
+
+      it('releases the wake lock', async () => {
+        const lock = { release: vi.fn(() => Promise.resolve()) };
+        const uninstall = fakeWakeLock(() => Promise.resolve(lock));
+        try {
+          const { unmount } = await startRecorder();
+          await flushAsync();
+
+          unmount();
+
+          expect(lock.release).toHaveBeenCalledTimes(1);
+        } finally {
+          uninstall();
+        }
+      });
+
+      it('releases a wake lock granted after it unmounted', async () => {
+        const lock = { release: vi.fn(() => Promise.resolve()) };
+        const granted = deferred<typeof lock>();
+        const uninstall = fakeWakeLock(() => granted.promise);
+        try {
+          const { unmount } = await startRecorder();
+
+          unmount();
+          granted.resolve(lock);
+          await flushAsync();
+
+          expect(lock.release).toHaveBeenCalledTimes(1);
+        } finally {
+          uninstall();
+        }
+      });
+    });
+
+    describe('while paused', () => {
+      it('stops the microphone and closes the audio graph', async () => {
+        const { result, unmount, graph, stream } = await startRecorder();
+        act(() => {
+          result.current.pauseRecording();
+        });
+
+        unmount();
+
+        expect(stream.getTracks()[0].stop).toHaveBeenCalled();
+        expect(graph.nodes[0].disconnect).toHaveBeenCalled();
+        expect(graph.contexts[0].close).toHaveBeenCalled();
+      });
+    });
+
+    // Opening the microphone can wait on the browser's permission prompt for
+    // as long as the user takes. A start that finished after the recorder was
+    // gone left a live recording no one could stop.
+    describe('while a recording is starting', () => {
+      it('never captures if the microphone opens after it unmounted', async () => {
+        const graph = trackAudioGraph();
+        const opening = deferred<MockMediaStream>();
+        // The first call is the access check; the second opens the recording's stream.
+        mockMediaDevices.getUserMedia
+          .mockImplementationOnce(() => Promise.resolve(new MockMediaStream()))
+          .mockImplementationOnce(() => opening.promise);
+        const { result, unmount } = renderHook(() => useAudioRecorder(defaultProps));
+        act(() => {
+          result.current.startRecording();
+        });
+        await flushAsync();
+        expect(mockMediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+
+        unmount();
+        const stream = new MockMediaStream();
+        opening.resolve(stream);
+        await flushAsync();
+
+        expect(stream.getTracks()[0].stop).toHaveBeenCalled();
+        expect(graph.contexts).toHaveLength(0);
+        expect(graph.nodes).toHaveLength(0);
+      });
+
+      it('never captures if the worklet loads after it unmounted', async () => {
+        const graph = trackAudioGraph();
+        const loading = deferred<void>();
+        const TrackedContext = globalThis.AudioContext as unknown as new () => {
+          audioWorklet: { addModule: () => Promise<void> };
+        };
+        globalThis.AudioContext = class extends TrackedContext {
+          constructor() {
+            super();
+            this.audioWorklet = { addModule: () => loading.promise };
+          }
+        } as unknown as typeof AudioContext;
+        const { result, unmount } = renderHook(() => useAudioRecorder(defaultProps));
+        act(() => {
+          result.current.startRecording();
+        });
+        await flushAsync();
+        expect(graph.contexts).toHaveLength(1);
+        const stream = result.current.mediaStreamRef.current!;
+
+        unmount();
+        loading.resolve();
+        await flushAsync();
+
+        expect(graph.nodes).toHaveLength(0);
+        expect(graph.contexts[0].close).toHaveBeenCalled();
+        expect(stream.getTracks()[0].stop).toHaveBeenCalled();
+      });
+    });
+
+    // React 19.2 runs effect cleanups when an <Activity> boundary hides its
+    // subtree, but keeps the state. A hidden recorder stops like an unmounted
+    // one, and must come back idle rather than claim a recording that ended.
+    describe('hidden under <Activity>', () => {
+      it('comes back idle', async () => {
+        let mode: 'visible' | 'hidden' = 'visible';
+        const wrapper = ({ children }: { children: React.ReactNode }) =>
+          React.createElement(React.Activity, { mode, children });
+        const onRecordingStateChange = vi.fn();
+        const { result, rerender } = renderHook(
+          () => useAudioRecorder({ ...defaultProps, onRecordingStateChange }),
+          { wrapper }
+        );
+        await act(async () => {
+          await result.current.startRecording();
+        });
+        const stream = result.current.mediaStreamRef.current!;
+
+        mode = 'hidden';
+        rerender();
+        expect(stream.getTracks()[0].stop).toHaveBeenCalled();
+
+        mode = 'visible';
+        rerender();
+        expect(result.current.isRecording).toBe(false);
+        expect(onRecordingStateChange.mock.calls).toEqual([['recording'], ['idle']]);
+      });
+    });
+
+    // The user asked for this note by stopping, so a host that unmounts the
+    // recorder straight after (even before the worklet hands over the final
+    // chunk) still gets it. This held before the unmount teardown existed and
+    // must keep holding with it.
+    describe('after a stop', () => {
+      it('still sends the final chunk, then releases the microphone', async () => {
+        const { result, unmount, graph, stream, deliver } = await startRecorder();
+        await act(async () => {
+          await result.current.stopRecording();
+        });
+
+        unmount();
+        act(() => deliver(audioMessage('finalChunk')));
+        await flushAsync(600);
+
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        const [, request] = mockFetch.mock.calls[0] as unknown as [string, { body: FormData }];
+        expect(request.body.get('isFinalChunk')).toBe('true');
+        expect(defaultProps.onTranscriptionComplete).toHaveBeenCalledTimes(1);
+        expect(stream.getTracks()[0].stop).toHaveBeenCalled();
+        expect(graph.contexts[0].close).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // The host had no way to know a recording was live: onTranscriptionUpdate
+  // first fires when the first chunk's transcript comes back, 47 seconds in.
+  describe('onRecordingStateChange', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+      mockMediaDevices.getUserMedia.mockImplementation(() =>
+        Promise.resolve(new MockMediaStream())
+      );
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function renderWithStates() {
+      const graph = trackAudioGraph();
+      const onRecordingStateChange = vi.fn();
+      const hook = renderHook(() => useAudioRecorder({ ...defaultProps, onRecordingStateChange }));
+      const states = () => onRecordingStateChange.mock.calls.map(([state]) => state);
+      return { ...hook, graph, states };
+    }
+
+    it('is not called on mount', () => {
+      const { states } = renderWithStates();
+
+      expect(states()).toEqual([]);
+    });
+
+    it('reports start, pause, resume, stop, processing and back to idle', async () => {
+      const { result, graph, states } = renderWithStates();
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      act(() => {
+        result.current.pauseRecording();
+      });
+      act(() => {
+        result.current.resumeRecording();
+      });
+      expect(states()).toEqual(['recording', 'paused', 'recording']);
+
+      // The final chunk's upload is held open to see the state while it runs.
+      const upload = deferred<FetchResponse>();
+      mockFetch.mockImplementationOnce(() => upload.promise);
+      await act(async () => {
+        await result.current.stopRecording();
+      });
+      // Processing from the stop itself: "idle" before the worklet hands over
+      // the final chunk would tell the host it may leave.
+      expect(states()).toEqual(['recording', 'paused', 'recording', 'processing']);
+
+      act(() => handlerOf(graph.nodes[0])(audioMessage('finalChunk')));
+      await flushAsync(600);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(states()).toEqual(['recording', 'paused', 'recording', 'processing']);
+
+      upload.resolve(fetchResponse(200));
+      await flushAsync();
+      expect(states()).toEqual(['recording', 'paused', 'recording', 'processing', 'idle']);
+    });
+
+    it('returns to idle when the worklet never hands over the final chunk', async () => {
+      const { result, states } = renderWithStates();
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      await act(async () => {
+        await result.current.stopRecording();
+      });
+      await flushAsync(600);
+
+      expect(states()).toEqual(['recording', 'processing', 'idle']);
+    });
+
+    it('reports processing while a saved recording is retried', async () => {
+      const { result, states } = renderWithStates();
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      await act(async () => {
+        await result.current.stopRecording();
+      });
+      await flushAsync(600);
+      const sessionId = mockRecoveryFns.createSession.mock.calls[0][0];
+      mockRecoveryFns.getFailedSession.mockResolvedValue({ id: sessionId });
+      const retry = deferred<boolean>();
+      mockRecoveryFns.retrySession.mockImplementation(() => retry.promise);
+
+      let retried!: Promise<void>;
+      act(() => {
+        retried = result.current.retryFailedSession();
+      });
+      await flushAsync();
+      expect(states()).toEqual(['recording', 'processing', 'idle', 'processing']);
+
+      retry.resolve(true);
+      await act(async () => {
+        await retried;
+      });
+      expect(states()).toEqual(['recording', 'processing', 'idle', 'processing', 'idle']);
+    });
+
+    it('reports idle when the recorder unmounts mid-recording', async () => {
+      const { result, unmount, states } = renderWithStates();
+      await act(async () => {
+        await result.current.startRecording();
+      });
+
+      unmount();
+
+      expect(states()).toEqual(['recording', 'idle']);
+    });
+
+    it('calls the callback the host passed last', async () => {
+      const first = vi.fn();
+      const second = vi.fn();
+      const { result, rerender } = renderHook((props) => useAudioRecorder(props), {
+        initialProps: { ...defaultProps, onRecordingStateChange: first },
+      });
+
+      await act(async () => {
+        await result.current.startRecording();
+      });
+      rerender({ ...defaultProps, onRecordingStateChange: second });
+      act(() => {
+        result.current.pauseRecording();
+      });
+
+      expect(first.mock.calls).toEqual([['recording']]);
+      expect(second.mock.calls).toEqual([['paused']]);
     });
   });
 

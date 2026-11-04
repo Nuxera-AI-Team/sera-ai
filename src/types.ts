@@ -6,6 +6,17 @@ export interface PatientDetails {
   age?: number;
 }
 
+/**
+ * What the recorder is doing, as passed to `onRecordingStateChange`.
+ * - "recording": capturing audio.
+ * - "paused": a recording is open but paused; the microphone is still held.
+ * - "processing": stopped, and the final chunk is still on its way or its
+ *   note is being made; or a saved recording is being retried.
+ * - "idle": nothing is being captured or sent. A failed recording waiting for
+ *   the user to retry it is idle too.
+ */
+export type RecordingState = "idle" | "recording" | "paused" | "processing";
+
 export interface AudioRecorderProps {
   /**
    * Speciality of the medical professional using the service
@@ -76,6 +87,17 @@ export interface AudioRecorderProps {
     classification: ClassificationInfoResponse,
     sessionId: string
   ) => void;
+
+  /**
+   * Called when the recording state changes, so the host can tell whether a
+   * recording is live (optional). Not called on mount: the recorder starts
+   * "idle". If it isn't idle when it unmounts, it reports "idle" then.
+   *
+   * Unmounting mid-recording stops it and sends nothing more; a recording
+   * already stopped still finishes. See `onRecordingStateChange` on
+   * AudioRecorderHookProps.
+   */
+  onRecordingStateChange?: (state: RecordingState) => void;
 
   /**
    * Callback function called when API request succeeds
