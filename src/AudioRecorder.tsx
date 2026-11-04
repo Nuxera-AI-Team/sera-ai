@@ -127,6 +127,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
   chunkDurationMs,
   onTranscriptionUpdate,
   onTranscriptionComplete,
+  onRecordingStateChange,
   onError,
   className = "",
   visualizerClassName = "",
@@ -175,6 +176,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({
       console.log(`[SERA] Transcription complete | sessionId=${sessionId}, textLength=${text.length}, hasClassification=${!!classification}`);
       onTranscriptionComplete?.(text, classification, sessionId);
     },
+    onRecordingStateChange,
   });
 
   const isEmergencyOrInPatient = speciality === "emergency" || speciality === "in_patient";

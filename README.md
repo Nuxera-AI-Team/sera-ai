@@ -159,6 +159,7 @@ function App() {
 | `selectedFormat` | `"json" \| "hl7" \| "fhir"` | No | `"json"` | Output format for the transcription result |
 | `onTranscriptionUpdate` | `(text: string, sessionId: string) => void` | No | — | Called with live transcription text as audio is processed in real time |
 | `onTranscriptionComplete` | `(text: string, classification: ClassificationInfoResponse, sessionId: string) => void` | No | — | Called when the full transcription and medical classification are ready |
+| `onRecordingStateChange` | `(state: RecordingState) => void` | No | — | Called when the [recording state](#recordingstate) changes, so the host can tell whether a recording is live. Not called on mount. A recorder that isn't idle when it unmounts reports `"idle"` then |
 | `onSuccess` | `(data: any) => void` | No | — | Called when the API request succeeds |
 | `onError` | `(error: string) => void` | No | — | Called when an error occurs (microphone issues, API failures, etc.) |
 | `className` | `string` | No | `""` | CSS class applied to the start recording button |
@@ -185,6 +186,7 @@ The component automatically manages these visual states:
 - **Real-time visualization** — Animated waveform with particle effects during recording
 - **Pause/Resume** — Pause recording without losing progress
 - **Session recovery** — Every recording's audio is saved in the browser's IndexedDB while it is transcribed, with its speciality and sample rate but no patient details, and deleted once the note arrives. If an upload fails, the recorder offers to retry that recording, and only that one. Saved audio older than 12 hours, including a recording interrupted by closing the tab, is deleted the next time a recorder opens the store
+- **Releases the microphone on unmount** — Unmounting mid-recording stops capture, the chunk timer and the wake lock, and sends nothing more, including audio not yet uploaded. A recording already stopped still finishes and delivers its note through `onTranscriptionComplete`
 - **Auto microphone validation** — Detects missing or silent microphones on start
 - **Toast notifications** — Shows errors as temporary toast messages
 - **Dark mode support** — All error/warning panels support light and dark themes
@@ -565,6 +567,18 @@ interface ClassificationInfoResponse {
 }
 ```
 
+### RecordingState
+
+Passed to `onRecordingStateChange` of `AudioRecorder` and `useAudioRecorder`:
+
+```typescript
+type RecordingState = "idle" | "recording" | "paused" | "processing";
+```
+
+- `recording`: capturing audio. `paused`: paused, with the microphone still held.
+- `processing`: stopped, and the final chunk or the note is still on its way; or a saved recording is being retried. It starts at the stop itself.
+- `idle`: nothing is being captured or sent, including a failed recording waiting for the user to retry it.
+
 ### APIResponse
 
 Generic API response wrapper:
@@ -613,7 +627,7 @@ export { AudioVisualizerImproved } from 'sera-ai';
 export { useAudioRecorder } from 'sera-ai';
 
 // Types
-export type { AudioRecorderProps, APIResponse, APIOptions } from 'sera-ai';
+export type { AudioRecorderProps, RecordingState, APIResponse, APIOptions } from 'sera-ai';
 export type { AudioDictationProps } from 'sera-ai';
 export type { AudioCaptureProps } from 'sera-ai';
 export type { AudioVisualizerImprovedProps } from 'sera-ai';

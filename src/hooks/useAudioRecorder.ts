@@ -3,7 +3,7 @@ import useFFmpegConverter from "./useFFmpegConverter";
 import useAudioRecovery from "./useAudioRecovery";
 import pRetry, { AbortError } from "p-retry";
 import useHL7FHIRConverter from "./useHL7FHIRConverter";
-import { ClassificationInfoResponse, PatientDetails } from "../types";
+import { ClassificationInfoResponse, PatientDetails, RecordingState } from "../types";
 import {
   isValidSampleRate,
   InvalidSampleRateError,
@@ -36,6 +36,9 @@ const MIN_CHUNK_DURATION_MS = 30_000;
  * lose, and the first transcript arrives too late to be worth showing.
  */
 const MAX_CHUNK_DURATION_MS = 120_000;
+
+/** Ends an upload attempt for a recording abandoned by an unmount. */
+const RECORDER_UNMOUNTED = "The recorder was unmounted mid-recording";
 
 /**
  * A host passing something unusable — NaN from an unparsed env var, 0, a
@@ -189,6 +192,20 @@ export interface AudioRecorderHookProps {
     classification: ClassificationInfoResponse,
     sessionId: string
   ) => void;
+  /**
+   * Called when the recording state changes (see RecordingState), so the host
+   * can tell whether a recording is live: onTranscriptionUpdate says nothing
+   * until the first chunk's transcript is back. Not called on mount; the
+   * recorder starts "idle". "processing" begins at the stop itself, not when
+   * the worklet hands over the final chunk.
+   *
+   * Unmounting stops a live recording: the microphone, audio graph, chunk timer
+   * and wake lock are released at once, and nothing more is sent, including
+   * audio captured but not yet uploaded. A recording already stopped still
+   * finishes, so its note arrives through onTranscriptionComplete. Either way a
+   * recorder that wasn't idle reports "idle" as it unmounts.
+   */
+  onRecordingStateChange?: (state: RecordingState) => void;
 }
 
 export interface UseAudioRecorderReturn {
@@ -482,6 +499,7 @@ const useAudioRecorder = ({
   chunkDurationMs = DEFAULT_CHUNK_DURATION_MS,
   onTranscriptionUpdate,
   onTranscriptionComplete,
+  onRecordingStateChange,
 }: AudioRecorderHookProps): UseAudioRecorderReturn => {
   // Resolved once per render and shared by start and resume, so neither can
   // fall back to a hard-coded interval. A prop change while paused takes effect
@@ -490,6 +508,9 @@ const useAudioRecorder = ({
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  // Stops whose delayed teardown hasn't run yet. Until it has, the final chunk
+  // may still be on its way from the worklet, so the recorder isn't idle.
+  const [pendingStops, setPendingStops] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [alreadyDoneTranscription, setAlreadyDoneTranscription] = useState("");
   const [transcriptionDone, setTranscriptionDone] = useState(false);
@@ -525,6 +546,42 @@ const useAudioRecorder = ({
   const sessionIdRef = React.useRef<string | null>(null); // This will be server session ID
   const localSessionIdRef = React.useRef<string | null>(null); // This will be our IndexedDB session ID
   const wakeLockRef = React.useRef<WakeLockSentinel | null>(null);
+  // Set while unmounted. A start still awaiting the microphone or the worklet
+  // reads it to give up instead of opening a recording no one can stop.
+  const unmountedRef = React.useRef(false);
+  // Set when an unmount interrupts a live recording: none of its audio that
+  // hasn't gone out yet is sent.
+  const abandonedRef = React.useRef(false);
+
+  // Releases one recording's capture graph: the worklet node, the microphone
+  // and the AudioContext. Safe to repeat for the same recording, and a ref is
+  // cleared only while it still names that recording, so one started since is
+  // left alone.
+  const releaseCapture = React.useCallback(
+    (
+      processor: AudioWorkletNode | null,
+      audioContext: AudioContext | null,
+      stream: MediaStream | null
+    ) => {
+      processor?.disconnect();
+      if (processorRef.current === processor) processorRef.current = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      if (mediaStreamRef.current === stream) mediaStreamRef.current = null;
+      if (audioContext && audioContext.state !== "closed") {
+        // Closing a context twice rejects, and there is nothing left to do then.
+        audioContext.close().catch(() => {});
+      }
+      if (audioContextRef.current === audioContext) audioContextRef.current = null;
+    },
+    []
+  );
+
+  const releaseWakeLock = React.useCallback(() => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().catch(() => {});
+      wakeLockRef.current = null;
+    }
+  }, []);
 
   const doctorName = doctorNameProp ?? "";
 
@@ -923,6 +980,8 @@ const useAudioRecorder = ({
 
           const chunkResult = await pRetry(
             async (attemptNumber) => {
+              // Checked before every attempt, retries included.
+              if (!retry && abandonedRef.current) throw new AbortError(RECORDER_UNMOUNTED);
               console.log(`[SERA] Step 9 (v2): Sending chunk to /v2 | sequence=${sequence}, attempt=${attemptNumber}`);
               try {
                 return await postTranscribeV2Chunk(
@@ -1094,6 +1153,8 @@ const useAudioRecorder = ({
         // Only retry the network request - not audio preparation or response conversion
         const data = await pRetry(
           async (attemptNumber) => {
+            // Checked before every attempt, retries included.
+            if (!retry && abandonedRef.current) throw new AbortError(RECORDER_UNMOUNTED);
             console.log(`[SERA] Step 9: Sending to server | sequence=${sequence}, attempt=${attemptNumber}`);
 
             const response = await fetch(`${apiBaseUrl}/api/transcribe`, {
@@ -1221,6 +1282,13 @@ const useAudioRecorder = ({
           }
         }
       } catch (err) {
+        // Dropped with the rest of an abandoned recording: there is no failure
+        // to save for a retry or to show.
+        if (!retry && abandonedRef.current) {
+          console.log(`[SERA] Chunk ${sequence} not sent: the recorder was unmounted`);
+          return;
+        }
+
         console.error(`[SERA] Upload failed for sequence ${sequence}:`, err);
 
         if (conversionError) {
@@ -1380,7 +1448,10 @@ const useAudioRecorder = ({
 
       // Pre-flight microphone check
       const micValid = await validateMicrophoneAccess();
-      if (!micValid) {
+      // This await, and the ones below that open the microphone and load the
+      // worklet, can outlast the recorder: the permission prompt waits on the
+      // user. After an unmount the start gives up and releases what it opened.
+      if (!micValid || unmountedRef.current) {
         return;
       }
 
@@ -1418,6 +1489,10 @@ const useAudioRecorder = ({
           autoGainControl: true,
         },
       });
+      if (unmountedRef.current) {
+        releaseCapture(null, null, stream);
+        return;
+      }
 
       mediaStreamRef.current = stream;
 
@@ -1470,6 +1545,11 @@ const useAudioRecorder = ({
 
       // Only a blob URL needs revoking.
       if (usingBlobWorklet) URL.revokeObjectURL(processorUrl);
+
+      if (unmountedRef.current) {
+        releaseCapture(null, audioContext, stream);
+        return;
+      }
 
       const processor = new AudioWorkletNode(audioContext, "audio-processor", {
         processorOptions: {
@@ -1536,14 +1616,26 @@ const useAudioRecorder = ({
       recordingSampleRateRef.current = audioContext.sampleRate;
       console.log(`[SERA] Step 2: Recording started | sampleRate=${audioContext.sampleRate}Hz`);
       processorRef.current = processor;
+      // A live recording again: an unmount abandons only the one it interrupts.
+      abandonedRef.current = false;
       setIsRecording(true);
       setIsPaused(false);
 
       // Prevent screen from sleeping during recording
       if ("wakeLock" in navigator) {
-        navigator.wakeLock.request("screen").then((lock) => {
-          wakeLockRef.current = lock;
-        }).catch(() => { /* non-critical, ignore silently */ });
+        navigator.wakeLock
+          .request("screen")
+          .then((lock) => {
+            // Granted after an unmount, it would never be released.
+            if (unmountedRef.current) {
+              lock.release().catch(() => {});
+              return;
+            }
+            wakeLockRef.current = lock;
+          })
+          .catch(() => {
+            /* non-critical, ignore silently */
+          });
       }
 
       startUploadChunkTimer();
@@ -1559,6 +1651,7 @@ const useAudioRecorder = ({
     currentDeviceId,
     captureSampleRate,
     startUploadChunkTimer,
+    releaseCapture,
   ]);
 
   const stopRecording = React.useCallback(async () => {
@@ -1572,16 +1665,15 @@ const useAudioRecorder = ({
 
     if (processor) {
       processor.port.postMessage({ command: "stop" });
+      // Handed to the teardown below. processorRef names a live recording only,
+      // so a second stop doesn't ask the worklet for a second final chunk, and
+      // an unmount from here on lets this recording finish.
+      processorRef.current = null;
+      setPendingStops((count) => count + 1);
 
-      setTimeout(async () => {
-        processor.disconnect();
-        if (processorRef.current === processor) processorRef.current = null;
-        if (audioContext && audioContext.state !== "closed") {
-          await audioContext.close();
-        }
-        if (audioContextRef.current === audioContext) audioContextRef.current = null;
-        stream?.getTracks().forEach((track) => track.stop());
-        if (mediaStreamRef.current === stream) mediaStreamRef.current = null;
+      setTimeout(() => {
+        releaseCapture(processor, audioContext, stream);
+        setPendingStops((count) => count - 1);
       }, 500);
     }
 
@@ -1591,16 +1683,13 @@ const useAudioRecorder = ({
     setIsPaused(false);
 
     // Release wake lock when recording stops
-    if (wakeLockRef.current) {
-      wakeLockRef.current.release().catch(() => {});
-      wakeLockRef.current = null;
-    }
+    releaseWakeLock();
 
     if (sessionHasFailedChunkRef.current && localSessionIdRef.current) {
       console.warn("[SERA] Recording stopped with failed session - showing retry UI");
       setShowRetrySessionPrompt(true);
     }
-  }, [clearUploadChunkTimer]);
+  }, [clearUploadChunkTimer, releaseCapture, releaseWakeLock]);
 
   // Reacquire wake lock if the page becomes visible again while still recording
   // (browsers automatically release wake locks when a page is hidden)
@@ -1609,9 +1698,16 @@ const useAudioRecorder = ({
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible" && isRecording && !wakeLockRef.current) {
-        navigator.wakeLock.request("screen").then((lock) => {
-          wakeLockRef.current = lock;
-        }).catch(() => {});
+        navigator.wakeLock
+          .request("screen")
+          .then((lock) => {
+            if (unmountedRef.current) {
+              lock.release().catch(() => {});
+              return;
+            }
+            wakeLockRef.current = lock;
+          })
+          .catch(() => {});
       }
     };
 
@@ -1741,6 +1837,9 @@ const useAudioRecorder = ({
       sequence: number,
       isPausedChunk = false
     ) => {
+      // Audio handed over after an unmount abandoned the recording.
+      if (abandonedRef.current) return;
+
       if (isFinalChunk) {
         // Only set processing state if session hasn't failed
         if (!sessionHasFailedChunkRef.current) {
@@ -1758,6 +1857,60 @@ const useAudioRecorder = ({
     },
     [processNextChunkInQueue, isLoaded]
   );
+
+  // What onRecordingStateChange reports. Capture outranks processing: a
+  // recording started while the last one's note is still being made is
+  // "recording".
+  const recordingState: RecordingState = isPaused
+    ? "paused"
+    : isRecording
+      ? "recording"
+      : pendingStops > 0 || isProcessing || isRetryingSession
+        ? "processing"
+        : "idle";
+
+  const onRecordingStateChangeRef = React.useRef(onRecordingStateChange);
+  onRecordingStateChangeRef.current = onRecordingStateChange;
+  // The state the host was last told; it starts out assuming "idle".
+  const reportedStateRef = React.useRef<RecordingState>("idle");
+
+  React.useEffect(() => {
+    if (reportedStateRef.current === recordingState) return;
+    reportedStateRef.current = recordingState;
+    onRecordingStateChangeRef.current?.(recordingState);
+  }, [recordingState]);
+
+  // Mount and unmount only. An unmounted recorder must not hold the
+  // microphone: nothing could stop it, and it would go on uploading what it
+  // hears with the last encounter and patient it was given.
+  React.useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      clearUploadChunkTimer();
+      releaseWakeLock();
+
+      // processorRef is set only while a recording is live: a stop hands its
+      // processor to the stop's own teardown. A live recording is abandoned,
+      // its queued and late audio dropped. A stopped one is left to finish,
+      // since the user asked for its note.
+      const processor = processorRef.current;
+      if (processor) {
+        abandonedRef.current = true;
+        chunkQueueRef.current = [];
+        releaseCapture(processor, audioContextRef.current, mediaStreamRef.current);
+        // Hidden under React's <Activity> rather than unmounted, the hook
+        // keeps its state, which must not claim a recording that has ended.
+        setIsRecording(false);
+        setIsPaused(false);
+      }
+
+      if (reportedStateRef.current !== "idle") {
+        reportedStateRef.current = "idle";
+        onRecordingStateChangeRef.current?.("idle");
+      }
+    };
+  }, []);
 
   // Add a test function to verify audio capture
   const testAudioCapture = useCallback(async () => {
