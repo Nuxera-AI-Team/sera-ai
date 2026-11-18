@@ -4,14 +4,6 @@ interface AudioSession {
   id: string;
   audioChunks: Record<number, string>; // Change from array to object
   metadata: {
-    patientDetails?: {
-      id?: number;
-      name?: string;
-      gender?: string;
-      dateOfBirth?: Date | string;
-      age?: number;
-    };
-    patientHistory?: string;
     speciality: string;
     sampleRate: number; // Store original sample rate for correct WAV conversion on retry
     timestamp: number;
@@ -28,14 +20,6 @@ interface AudioRecoveryHookReturn {
   createSession: (
     sessionId: string,
     metadata: {
-      patientDetails?: {
-        id?: number;
-        name?: string;
-        gender?: string;
-        dateOfBirth?: Date | string;
-        age?: number;
-      };
-      patientHistory?: string;
       speciality: string;
       sampleRate: number;
     }
@@ -49,8 +33,8 @@ interface AudioRecoveryHookReturn {
   markSessionFailed: (sessionId: string, error?: string) => Promise<void>;
   retrySession: (sessionId: string) => Promise<boolean>;
   deleteSession: (sessionId: string) => Promise<void>;
-  getFailedSession: () => Promise<AudioSession | null>;
-  hasFailedSession: () => Promise<boolean>;
+  getFailedSession: (sessionId: string) => Promise<AudioSession | null>;
+  hasFailedSession: (sessionId: string) => Promise<boolean>;
   clearFailedSessions: () => Promise<void>;
 }
 
@@ -79,7 +63,12 @@ const useAudioRecovery = (
 
   const DB_NAME = "AudioSessionDB";
   const STORE_NAME = "audioSessions";
-  const DB_VERSION = 1;
+  // Version 1 stored each recording with the patient's details and expired
+  // nothing. The upgrade to version 2 clears everything it wrote.
+  const DB_VERSION = 2;
+  // A saved recording is kept for a retry soon after it failed, not longer.
+  // Older ones are deleted whatever their status, interrupted ones included.
+  const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
   const createAudioEncodingWorker = () => {
     const workerCode = `
@@ -363,18 +352,58 @@ const useAudioRecovery = (
     [initWorker]
   );
 
+  // Delete every session older than SESSION_MAX_AGE_MS, whatever its status.
+  // Resolves with how many went.
+  const deleteExpiredSessions = (db: IDBDatabase): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], "readwrite");
+      const store = transaction.objectStore(STORE_NAME);
+      const expired = IDBKeyRange.upperBound(Date.now() - SESSION_MAX_AGE_MS, true);
+      const request = store.index("timestamp").getAllKeys(expired);
+
+      request.onsuccess = () => {
+        const keys = request.result;
+        let remaining = keys.length;
+        if (remaining === 0) {
+          resolve(0);
+          return;
+        }
+
+        for (const key of keys) {
+          const deleteRequest = store.delete(key);
+          deleteRequest.onsuccess = () => {
+            remaining -= 1;
+            if (remaining === 0) resolve(keys.length);
+          };
+          deleteRequest.onerror = () => reject(deleteRequest.error);
+        }
+      };
+
+      request.onerror = () => reject(request.error);
+    });
+
   // Initialize IndexedDB
   const initDB = useCallback(async (): Promise<IDBDatabase> => {
     if (dbRef.current) {
       return dbRef.current;
     }
 
-    return new Promise((resolve, reject) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
       request.onerror = () => {
         console.error("[SERA] Failed to open IndexedDB:", request.error);
         reject(request.error);
+      };
+
+      // Another tab holds the database open at an older version, and the
+      // upgrade waits until it lets go. A tab still running a release from
+      // before version 2 never does on its own, so fail now rather than hold
+      // up whatever needed the store, such as starting a recording, until that
+      // tab is closed. The pending request still upgrades once it is.
+      request.onblocked = () => {
+        console.warn("[SERA] IndexedDB upgrade blocked by another open tab");
+        reject(new Error("IndexedDB upgrade blocked by another open tab"));
       };
 
       request.onsuccess = () => {
@@ -383,16 +412,32 @@ const useAudioRecovery = (
       };
 
       request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
+        const openRequest = event.target as IDBOpenDBRequest;
+        const upgradeDb = openRequest.result;
 
         // Create object store if it doesn't exist
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: "id" });
+        if (!upgradeDb.objectStoreNames.contains(STORE_NAME)) {
+          const store = upgradeDb.createObjectStore(STORE_NAME, { keyPath: "id" });
           store.createIndex("status", "status", { unique: false });
           store.createIndex("timestamp", "metadata.timestamp", { unique: false });
+        } else if (event.oldVersion < 2) {
+          // Written by version 1, with patient details: none of it may stay.
+          openRequest.transaction?.objectStore(STORE_NAME).clear();
         }
       };
     });
+
+    try {
+      const deleted = await deleteExpiredSessions(db);
+      if (deleted > 0) {
+        console.log(`[SERA] Deleted expired audio sessions | count=${deleted}`);
+      }
+    } catch (error) {
+      // The store still works; whatever expired goes the next time it opens.
+      console.warn("[SERA] Failed to delete expired audio sessions:", error);
+    }
+
+    return db;
   }, []);
 
   // Convert Float32Array to base64
@@ -424,14 +469,6 @@ const useAudioRecovery = (
     async (
       sessionId: string,
       metadata: {
-        patientDetails?: {
-          id?: number;
-          name?: string;
-          gender?: string;
-          dateOfBirth?: Date | string;
-          age?: number;
-        };
-        patientHistory?: string;
         speciality: string;
         sampleRate: number;
       }
@@ -445,7 +482,9 @@ const useAudioRecovery = (
           id: sessionId,
           audioChunks: {},
           metadata: {
-            ...metadata,
+            // Field by field, so nothing else a caller passes gets stored.
+            speciality: metadata.speciality,
+            sampleRate: metadata.sampleRate,
             timestamp: Date.now(),
             totalChunks: 0,
             completedChunks: 0,
@@ -686,37 +725,44 @@ const useAudioRecovery = (
     [initDB]
   );
 
-  // Get all failed sessions
-  const getFailedSession = useCallback(async (): Promise<AudioSession | null> => {
-    try {
-      const db = await initDB();
-      const transaction = db.transaction([STORE_NAME], "readonly");
-      const store = transaction.objectStore(STORE_NAME);
-      const index = store.index("status");
+  // The session with this id, if its upload failed. Looked up by id only: any
+  // other stored session is another recording's, possibly another patient's.
+  const getFailedSession = useCallback(
+    async (sessionId: string): Promise<AudioSession | null> => {
+      try {
+        const db = await initDB();
+        const transaction = db.transaction([STORE_NAME], "readonly");
+        const store = transaction.objectStore(STORE_NAME);
 
-      return new Promise((resolve, reject) => {
-        const request = index.getAll("failed");
+        return new Promise((resolve, reject) => {
+          const request = store.get(sessionId);
 
-        request.onsuccess = () => {
-          resolve(request.result[0]);
-        };
+          request.onsuccess = () => {
+            const session = request.result as AudioSession | undefined;
+            resolve(session?.status === "failed" ? session : null);
+          };
 
-        request.onerror = () => {
-          console.error("[SERA] Failed to get failed sessions:", request.error);
-          reject(request.error);
-        };
-      });
-    } catch (error) {
-      console.error("[SERA] Error getting failed sessions:", error);
-      return null;
-    }
-  }, [initDB]);
+          request.onerror = () => {
+            console.error("[SERA] Failed to get failed session:", request.error);
+            reject(request.error);
+          };
+        });
+      } catch (error) {
+        console.error("[SERA] Error getting failed session:", error);
+        return null;
+      }
+    },
+    [initDB]
+  );
 
-  // Check if there are failed sessions
-  const hasFailedSession = useCallback(async (): Promise<boolean> => {
-    const failedSession = await getFailedSession();
-    return !!failedSession;
-  }, [getFailedSession]);
+  // Check whether the session with this id failed
+  const hasFailedSession = useCallback(
+    async (sessionId: string): Promise<boolean> => {
+      const failedSession = await getFailedSession(sessionId);
+      return !!failedSession;
+    },
+    [getFailedSession]
+  );
 
   // Clear failed sessions
   const clearFailedSessions = useCallback(async (): Promise<void> => {

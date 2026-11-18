@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import useAudioRecovery from '../hooks/useAudioRecovery';
+import { captureConsole } from './consoleCapture';
 
 // --- IndexedDB mock infrastructure ---
 
 let mockStoreData: Map<string, any>;
+
+// The database version already on disk; 0 means it does not exist yet. As in a
+// browser, indexedDB.open runs an upgrade only when asked for a higher version.
+let mockDbVersion: number;
+
+// Another tab holds the database open at its old version and never lets go, so
+// an upgrade can only wait.
+let mockOpenBlocked: boolean;
 
 const createMockIDBRequest = (result: any, error: any = null) => {
   const request: any = {
@@ -52,6 +61,18 @@ const createMockObjectStore = () => ({
       );
       return createMockIDBRequest(results);
     }),
+    // Ranged lookups go to the timestamp index; `range` is the fake
+    // IDBKeyRange installed below.
+    getAllKeys: vi.fn((range: { upper: number; upperOpen: boolean }) => {
+      const keys = Array.from(mockStoreData.values())
+        .filter((item: any) => {
+          const timestamp = item.metadata?.timestamp;
+          if (typeof timestamp !== 'number') return false;
+          return range.upperOpen ? timestamp < range.upper : timestamp <= range.upper;
+        })
+        .map((item: any) => item.id);
+      return createMockIDBRequest(keys);
+    }),
   })),
   createIndex: vi.fn(),
 });
@@ -70,7 +91,8 @@ const createMockDB = () => ({
     return tx;
   }),
   objectStoreNames: {
-    contains: vi.fn(() => false),
+    // Every version of the database has had the store.
+    contains: vi.fn(() => mockDbVersion > 0),
   },
   createObjectStore: vi.fn(() => ({
     createIndex: vi.fn(),
@@ -131,14 +153,6 @@ class MockWorker {
 type ReprocessSessionFn = (
   audioChunks: Float32Array[],
   metadata: {
-    patientDetails?: {
-      id?: number;
-      name?: string;
-      gender?: string;
-      dateOfBirth?: Date | string;
-      age?: number;
-    };
-    patientHistory?: string;
     speciality: string;
     sampleRate: number;
     timestamp: number;
@@ -169,6 +183,8 @@ describe('useAudioRecovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStoreData = new Map();
+    mockDbVersion = 0;
+    mockOpenBlocked = false;
     mockDB = createMockDB();
     undecodableChunks = new Set();
     mockReprocessSession.mockClear();
@@ -177,25 +193,42 @@ describe('useAudioRecovery', () => {
     Object.defineProperty(globalThis, 'indexedDB', {
       writable: true,
       value: {
-        open: vi.fn(() => {
+        open: vi.fn((_name: string, version: number) => {
           const request: any = {
             result: mockDB,
             error: null,
+            transaction: null,
             onsuccess: null as ((event: any) => void) | null,
             onerror: null as ((event: any) => void) | null,
             onupgradeneeded: null as ((event: any) => void) | null,
+            onblocked: null as ((event: any) => void) | null,
           };
           setTimeout(() => {
-            // Trigger upgrade first
-            if (request.onupgradeneeded) {
-              request.onupgradeneeded({ target: request });
+            if (version > mockDbVersion) {
+              if (mockOpenBlocked) {
+                // The request stays pending until the other tab closes.
+                request.onblocked?.({ target: request, oldVersion: mockDbVersion, newVersion: version });
+                return;
+              }
+              // The upgrade runs inside its own versionchange transaction.
+              request.transaction = createMockTransaction();
+              request.onupgradeneeded?.({ target: request, oldVersion: mockDbVersion, newVersion: version });
+              request.transaction = null;
+              mockDbVersion = version;
             }
-            if (request.onsuccess) {
-              request.onsuccess({ target: request });
-            }
+            request.onsuccess?.({ target: request });
           }, 0);
           return request;
         }),
+      },
+    });
+
+    // jsdom has no IndexedDB, so no IDBKeyRange either. Only upper bounds are
+    // used.
+    Object.defineProperty(globalThis, 'IDBKeyRange', {
+      writable: true,
+      value: {
+        upperBound: (upper: number, upperOpen = false) => ({ upper, upperOpen }),
       },
     });
 
@@ -238,27 +271,39 @@ describe('useAudioRecovery', () => {
       });
 
       // Verify indexedDB.open was called
-      expect(globalThis.indexedDB.open).toHaveBeenCalledWith('AudioSessionDB', 1);
+      expect(globalThis.indexedDB.open).toHaveBeenCalledWith('AudioSessionDB', 2);
     });
 
-    it('should accept patient details in metadata', async () => {
+    // The store keeps a recording's audio on the device until its note
+    // arrives, and longer when an upload fails. It holds nothing about the
+    // patient: retry never read those fields back.
+    it('should store no patient details or history', async () => {
       const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
 
+      // The fields are gone from the type; a caller passing them anyway must
+      // not get them stored either.
+      const metadata = {
+        speciality: 'neurology',
+        sampleRate: 48000,
+        patientDetails: { id: 1, name: 'FIXTURE-NAME', gender: 'FIXTURE-GENDER', age: 1 },
+        patientHistory: 'FIXTURE-HISTORY',
+      } as unknown as Parameters<typeof result.current.createSession>[1];
+
       await act(async () => {
-        await result.current.createSession('session-2', {
-          speciality: 'neurology',
-          sampleRate: 48000,
-          patientDetails: {
-            id: 123,
-            name: 'John Doe',
-            gender: 'male',
-          },
-          patientHistory: 'Previous headaches',
-        });
+        await result.current.createSession('session-2', metadata);
       });
 
-      // Should not throw
-      expect(globalThis.indexedDB.open).toHaveBeenCalled();
+      const stored = mockStoreData.get('session-2');
+      expect(Object.keys(stored.metadata).sort()).toEqual([
+        'chunkIndices',
+        'completedChunks',
+        'sampleRate',
+        'speciality',
+        'timestamp',
+        'totalChunks',
+      ]);
+      expect(stored.metadata).toMatchObject({ speciality: 'neurology', sampleRate: 48000 });
+      expect(JSON.stringify(stored)).not.toContain('FIXTURE');
     });
   });
 
@@ -315,28 +360,170 @@ describe('useAudioRecovery', () => {
   });
 
   describe('getFailedSession', () => {
-    it('should return null/undefined when no failed sessions exist', async () => {
+    const lookUp = async (sessionId: string) => {
       const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
-
       let failedSession: any;
       await act(async () => {
-        failedSession = await result.current.getFailedSession();
+        failedSession = await result.current.getFailedSession(sessionId);
+      });
+      return failedSession;
+    };
+
+    it('should return null/undefined when the session does not exist', async () => {
+      expect(await lookUp('no-such-session')).toBeFalsy();
+    });
+
+    it('should return the session once its upload has failed', async () => {
+      mockStoreData.set('own-recording', buildSession('own-recording', ['chunk-0']));
+
+      expect((await lookUp('own-recording'))?.id).toBe('own-recording');
+    });
+
+    // Regression: the lookup returned the oldest failed session in the store,
+    // which the recorder then resent with the current patient's details.
+    it("should not return another recording's failed session", async () => {
+      mockStoreData.set('earlier-recording', buildSession('earlier-recording', ['chunk-0']));
+
+      expect(await lookUp('own-recording')).toBeFalsy();
+    });
+
+    it('should return null/undefined while the session is still recording', async () => {
+      mockStoreData.set('own-recording', {
+        ...buildSession('own-recording', ['chunk-0']),
+        status: 'recording',
       });
 
-      expect(failedSession).toBeFalsy();
+      expect(await lookUp('own-recording')).toBeFalsy();
     });
   });
 
   describe('hasFailedSession', () => {
-    it('should return false when no failed sessions exist', async () => {
+    it('should return false when the session has not failed', async () => {
       const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
 
       let hasFailed: boolean = true;
       await act(async () => {
-        hasFailed = await result.current.hasFailedSession();
+        hasFailed = await result.current.hasFailedSession('no-such-session');
       });
 
       expect(hasFailed).toBe(false);
+    });
+  });
+
+  // Records went only when an upload succeeded: a failed recording stayed
+  // until a retry worked or someone cleared it, and an interrupted one (the tab
+  // closed mid-consultation) stayed forever, full audio included.
+  describe('expiry', () => {
+    const HOUR = 60 * 60 * 1000;
+
+    const storedAgo = (id: string, status: string, ageMs: number) => {
+      const session = buildSession(id, ['chunk-0']);
+      return {
+        ...session,
+        status,
+        metadata: { ...session.metadata, timestamp: Date.now() - ageMs },
+      };
+    };
+
+    beforeEach(() => {
+      // The store is already at the current version: opening it runs no
+      // upgrade, so only the expiry can remove anything.
+      mockDbVersion = 2;
+    });
+
+    it('should delete recordings older than 12 hours when the store opens', async () => {
+      mockStoreData.set('failed-13h', storedAgo('failed-13h', 'failed', 13 * HOUR));
+      mockStoreData.set(
+        'interrupted-12h1m',
+        storedAgo('interrupted-12h1m', 'recording', 12 * HOUR + 60_000)
+      );
+      mockStoreData.set('failed-11h', storedAgo('failed-11h', 'failed', 11 * HOUR));
+
+      const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
+      await act(async () => {
+        await result.current.createSession('new-recording', {
+          speciality: 'general',
+          sampleRate: 16000,
+        });
+      });
+
+      expect(mockStoreData.has('failed-13h')).toBe(false);
+      expect(mockStoreData.has('interrupted-12h1m')).toBe(false);
+      expect(mockStoreData.has('failed-11h')).toBe(true);
+      expect(mockStoreData.has('new-recording')).toBe(true);
+    });
+  });
+
+  // Version 1 stored every recording with the patient's details. Nothing an
+  // older release wrote may survive the move to version 2.
+  describe('upgrade from version 1', () => {
+    const legacySession = (id: string) => {
+      const session = buildSession(id, ['chunk-0']);
+      return {
+        ...session,
+        metadata: {
+          ...session.metadata,
+          patientDetails: { id: 1, name: 'FIXTURE-NAME' },
+          patientHistory: 'FIXTURE-HISTORY',
+        },
+      };
+    };
+
+    it('should clear every record version 1 wrote, however recent', async () => {
+      const readConsole = captureConsole();
+      mockDbVersion = 1;
+      mockStoreData.set('legacy-recent', legacySession('legacy-recent'));
+
+      const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
+      await act(async () => {
+        await result.current.createSession('first-after-upgrade', {
+          speciality: 'general',
+          sampleRate: 16000,
+        });
+      });
+
+      expect(mockStoreData.has('legacy-recent')).toBe(false);
+      expect(mockStoreData.has('first-after-upgrade')).toBe(true);
+      expect(readConsole()).not.toContain('FIXTURE');
+    });
+
+    it('should not clear the store when it is already at version 2', async () => {
+      mockDbVersion = 2;
+      mockStoreData.set('current-recent', buildSession('current-recent', ['chunk-0']));
+
+      const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
+      await act(async () => {
+        await result.current.createSession('another-recording', {
+          speciality: 'general',
+          sampleRate: 16000,
+        });
+      });
+
+      expect(mockStoreData.has('current-recent')).toBe(true);
+    });
+
+    // An upgrade waits for every tab to close the old version. A tab still
+    // running the previous release never does, and waiting would hold up the
+    // start of a recording until that tab is closed.
+    it('should fail instead of waiting when another tab blocks the upgrade', async () => {
+      mockDbVersion = 1;
+      mockOpenBlocked = true;
+      const { result } = renderHook(() => useAudioRecovery(mockReprocessSession));
+
+      let outcome = '';
+      await act(async () => {
+        outcome = await Promise.race([
+          result.current
+            .createSession('blocked-recording', { speciality: 'general', sampleRate: 16000 })
+            .then(
+              () => 'created',
+              () => 'failed'
+            ),
+          new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 100)),
+        ]);
+      });
+
+      expect(outcome).toBe('failed');
     });
   });
 
